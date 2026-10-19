@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "adsorp"
 version = "0.1.0"
-description = "Sb(V) adsorption isotherm / kinetics / pH-edge analysis pipeline"
+description = "Adsorption isotherm / kinetics / pH-edge analysis pipeline"
 requires-python = ">=3.10"
 dependencies = [
   "pandas>=2.0",
