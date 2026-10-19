@@ -1,0 +1,12 @@
+# Python
+__pycache__/
+*.pyc
+
+# 拟合缓存（可由 run 重新生成）
+output/_analysis.pkl
+
+# Excel 临时文件
+~$*
+
+# 本地工作目录（WorkBuddy 会话数据）
+.workbuddy/

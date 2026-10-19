@@ -1,0 +1,179 @@
+%% ===============================================================
+% Adsorption isotherm fitting - MATLAB R2024b
+% Models: Langmuir / Freundlich / Sips / Dubinin-Radushkevich (D-R)
+% Method: unweighted nonlinear least squares (original qe scale)
+% Optimizer: fminsearch (base MATLAB, no Optimization Toolbox needed)
+% All model parameters are kept positive by log transformation.
+% No plotting commands are included.
+% No local functions: this code also works when pasted into MATLAB Command Window.
+%% ===============================================================
+
+clear;
+clc;
+
+%% 1. Experimental data (updated)
+Ce = [0.07; 0.97; 5.25; 9.78; 14.67];        % mg/L
+qe = [27.920; 38.125; 42.945; 45.430; 44.270]; % mg/g
+
+assert(numel(Ce) == numel(qe), 'Ce and qe must have the same length.');
+assert(all(isfinite(Ce) & Ce > 0), 'Ce must be finite and positive.');
+assert(all(isfinite(qe) & qe > 0), 'qe must be finite and positive.');
+
+SST = sum((qe - mean(qe)).^2);
+assert(SST > 0, 'R^2 is undefined when all qe values are equal.');
+N = numel(qe);
+
+%% 2. Model equations
+% Langmuir: qe = Qm * KL * Ce / (1 + KL * Ce)
+% p = [Qm, KL]; Qm: mg/g; KL: L/mg
+Langmuir = @(p,x) (p(1).*p(2).*x) ./ (1 + p(2).*x);
+
+% Freundlich: qe = KF * Ce^(1/n)
+% p = [KF, n]
+Freundlich = @(p,x) p(1).*x.^(1./p(2));
+
+% Sips: qe = Qm * Ks * Ce^ns / (1 + Ks * Ce^ns)
+% p = [Qm, Ks, ns]; Qm: mg/g
+Sips = @(p,x) (p(1).*p(2).*x.^p(3)) ./ (1 + p(2).*x.^p(3));
+
+% D-R: qe = Qm * exp(-beta * epsilon^2)
+% epsilon = R*T*ln(1 + 1/Ce_mol) (same convention as uploaded D-R code)
+% p = [Qm, beta]; beta: mol^2/kJ^2
+% NOTE: This retains Te molar mass and temperature from the uploaded script.
+%       Change M_Te and T if the actual D-R calculation requires other values.
+M_Te = 127.60;                    % g/mol (Te)
+T = 298.15;                       % K
+R = 8.314462618e-3;               % kJ/(mol*K)
+Ce_mol = Ce .* 1e-3 ./ M_Te;       % mg/L -> mol/L
+epsilon = R*T.*log(1 + 1./Ce_mol); % kJ/mol
+DR = @(p,x) p(1).*exp(-p(2).*x.^2);
+
+%% 3. Optimization settings
+opts = optimset('Display','off', ...
+                'MaxIter',100000, ...
+                'MaxFunEvals',100000, ...
+                'TolX',1e-12, ...
+                'TolFun',1e-12);
+
+% Starting values (one row per start, parameters in the order above)
+startLangmuir = [40,  1; 50,  5; 60, 20; 80, 0.1; 40, 100];
+startFreundlich = [30, 3; 35, 8; 40, 10; 50, 20; 25, 2];
+startSips = [40, 1,    0.2;
+             50, 1,    0.5;
+             60, 1,    1.0;
+             80, 0.1,  0.5;
+            100, 0.01, 0.2;
+            200, 0.01, 0.1;
+             50, 3,    0.35;
+             60, 10,   0.2];
+startDR = [50, 1e-4;
+           70, 1e-3;
+          100, 1e-3;
+          150, 1e-4;
+          200, 1e-2;
+           60, 5e-4];
+
+modelNames = {'Langmuir'; 'Freundlich'; 'Sips'; 'D-R'};
+modelFunctions = {Langmuir; Freundlich; Sips; DR};
+modelInputs = {Ce; Ce; Ce; epsilon};
+initialSets = {startLangmuir; startFreundlich; startSips; startDR};
+
+nModels = numel(modelNames);
+fitParameters = cell(nModels,1);
+fitQe = zeros(N,nModels);
+SSE = zeros(nModels,1);
+RMSE = zeros(nModels,1);
+R2 = zeros(nModels,1);
+
+%% 4. Fit all models (multiple initial guesses, best SSE retained)
+for m = 1:nModels
+    model = modelFunctions{m};
+    x = modelInputs{m};
+    starts = initialSets{m};
+
+    % Parameter positivity is enforced: p = exp(theta).
+    % Anonymous objective; no external/local function is needed.
+    objective = @(theta) sum((qe - model(exp(theta),x)).^2);
+    bestSSE = inf;
+    bestTheta = [];
+
+    for k = 1:size(starts,1)
+        theta0 = log(starts(k,:));
+        [thetaTry,sseTry] = fminsearch(objective,theta0,opts);
+        if isfinite(sseTry) && sseTry < bestSSE
+            bestSSE = sseTry;
+            bestTheta = thetaTry;
+        end
+    end
+
+    if isempty(bestTheta)
+        error('Fitting failed for model: %s',modelNames{m});
+    end
+
+    fitParameters{m} = exp(bestTheta);
+    fitQe(:,m) = model(fitParameters{m},x);
+    SSE(m) = sum((qe - fitQe(:,m)).^2);
+    RMSE(m) = sqrt(SSE(m)/N);
+    R2(m) = 1 - SSE(m)/SST;
+end
+
+%% 5. Extract fitted parameters
+pL = fitParameters{1};
+Qm_L = pL(1); KL = pL(2);
+
+pF = fitParameters{2};
+KF = pF(1); n = pF(2);
+
+pS = fitParameters{3};
+Qm_S = pS(1); Ks = pS(2); ns = pS(3);
+
+pDR = fitParameters{4};
+Qm_DR = pDR(1); beta = pDR(2);
+E = 1/sqrt(2*beta);                 % kJ/mol
+
+%% 6. Print fitted parameters and goodness-of-fit statistics
+fprintf('\n======================================================\n');
+fprintf('Adsorption isotherm fitting (five updated data points)\n');
+fprintf('Unweighted nonlinear least squares; no plotting\n');
+fprintf('======================================================\n');
+
+fprintf('\n--- Langmuir ---\n');
+fprintf('Qm   = %.8g mg/g\n',Qm_L);
+fprintf('KL   = %.8g L/mg\n',KL);
+fprintf('SSE  = %.8f\nRMSE = %.8f mg/g\nR^2  = %.6f\n',SSE(1),RMSE(1),R2(1));
+
+fprintf('\n--- Freundlich ---\n');
+fprintf('KF   = %.8g\n',KF);
+fprintf('n    = %.8g\n',n);
+fprintf('1/n  = %.8g\n',1/n);
+fprintf('SSE  = %.8f\nRMSE = %.8f mg/g\nR^2  = %.6f\n',SSE(2),RMSE(2),R2(2));
+
+fprintf('\n--- Sips ---\n');
+fprintf('Qm   = %.8g mg/g\n',Qm_S);
+fprintf('Ks   = %.8g\n',Ks);
+fprintf('ns   = %.8g\n',ns);
+fprintf('SSE  = %.8f\nRMSE = %.8f mg/g\nR^2  = %.6f\n',SSE(3),RMSE(3),R2(3));
+
+fprintf('\n--- Dubinin-Radushkevich (D-R) ---\n');
+fprintf('Qm   = %.8g mg/g\n',Qm_DR);
+fprintf('beta = %.8g mol^2/kJ^2\n',beta);
+fprintf('E    = %.8g kJ/mol\n',E);
+fprintf('SSE  = %.8f\nRMSE = %.8f mg/g\nR^2  = %.6f\n',SSE(4),RMSE(4),R2(4));
+
+%% 7. Summary table and fitted qe at each measurement point
+ResultTable = table(string(modelNames),SSE,RMSE,R2, ...
+    'VariableNames',{'Model','SSE','RMSE_mg_g','R2'});
+disp(' ');
+disp('===== Model comparison =====');
+disp(ResultTable);
+
+FittedQeTable = table(Ce,qe,fitQe(:,1),fitQe(:,2),fitQe(:,3),fitQe(:,4), ...
+    'VariableNames',{'Ce_mg_L','qe_observed','qe_Langmuir', ...
+                     'qe_Freundlich','qe_Sips','qe_DR'});
+disp(' ');
+disp('===== Observed and fitted adsorption capacities (mg/g) =====');
+disp(FittedQeTable);
+
+% Note: These four isotherms are monotonically increasing in Ce for
+% positive parameters; the observed decrease at the last data point
+% cannot be reproduced exactly by these model equations.

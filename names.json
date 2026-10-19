@@ -1,0 +1,24 @@
+{
+  "minerals": {
+    "δ-MnO₂": "δ-MnO₂",
+    "钙锰矿": "Rancieite",
+    "酸性水钠锰矿": "Acid birnessite",
+    "碱性水钠锰矿": "Alkaline birnessite",
+    "六方纤铁矿": "Feroxyhyte",
+    "Rancieite": "Rancieite",
+    "Acid birnessite": "Acid birnessite",
+    "Alkaline birnessite": "Alkaline birnessite",
+    "Feroxyhyte": "Feroxyhyte"
+  },
+  "backgrounds": {
+    "0.001 M NaNO₃": "0.001 M NaNO₃",
+    "0.01 M NaNO₃": "0.01 M NaNO₃",
+    "0.1 M NaNO₃": "0.1 M NaNO₃",
+    "ASW": "ASW"
+  },
+  "experiments": {
+    "isotherm": "Isotherm",
+    "kinetics": "Kinetics",
+    "edge": "Edge"
+  }
+}
