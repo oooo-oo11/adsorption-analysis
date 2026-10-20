@@ -10,6 +10,7 @@ import logging
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+import matplotlib.patheffects as pe
 import numpy as np
 from matplotlib.ticker import LogLocator, MaxNLocator, NullLocator
 
@@ -205,6 +206,9 @@ def panel_label(ax, letter: str, name: str = "", cond: str = "", y: float = 0.97
     两行间距用 ``TITLE_GAP``（轴高比例）控制：11.2 pt 的标题行高约
     0.07 个轴高，取 0.068 时两行几乎贴在一起，这里留到 0.108。
     """
+    # 白色描边晕：线性时间轴下早期高吸附点可能顶到标题行，
+    # 细晕让文字在任何底色上都可读，视觉上仍是无底框的纯文字。
+    halo = [pe.withStroke(linewidth=2.6, foreground="white")]
     txt = f"({letter})"
     if name:
         txt += f"  {name}"
@@ -213,11 +217,12 @@ def panel_label(ax, letter: str, name: str = "", cond: str = "", y: float = 0.97
     if has_cjk(txt) and "$" in txt:
         txt = txt.replace("$", "").replace("{", "").replace("}", "")
     ax.text(0.03, y, txt, transform=ax.transAxes, ha="left", va="top",
-            fontsize=FONT_PANEL, fontweight="bold", zorder=10)
+            fontsize=FONT_PANEL, fontweight="bold", zorder=10, path_effects=halo)
     marks = [ax.texts[-1]]
     if cond:
         ax.text(0.03, y - TITLE_GAP, str(cond), transform=ax.transAxes,
-                ha="left", va="top", fontsize=FONT_COND, color=INK, zorder=10)
+                ha="left", va="top", fontsize=FONT_COND, color=INK, zorder=10,
+                path_effects=halo)
         marks.append(ax.texts[-1])
     ax._wb_titles = marks
 

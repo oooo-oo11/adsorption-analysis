@@ -98,6 +98,22 @@ def run(*, data_dir: str | Path | None = None,
         # 报告标题等用语从模板 Settings 取（project / analyte），不写死体系
         _st = cfg_t.get("settings") or {}
         doc_meta = {k: _st.get(k) for k in ("project", "analyte")}
+        # 模板 Settings 的 solid:<矿物> 是本次数据集的固液比，优先于 config.json
+        # 的默认值（CLI --solid 标量最高，不被覆盖）。键允许写中文矿物名，
+        # 统一经 names 映射到英文显示名后再合并，避免两处写法不一致时静默丢值。
+        tmpl_solids = {}
+        for k, v in (cfg_t.get("solids_g_per_L") or {}).items():
+            try:
+                fv = float(v)
+            except (TypeError, ValueError):
+                continue
+            if np.isfinite(fv) and fv > 0:
+                tmpl_solids[N.mineral(str(k))] = fv
+        if tmpl_solids:
+            if solid is None:
+                solid = tmpl_solids
+            elif isinstance(solid, dict):
+                solid = {**solid, **tmpl_solids}
         if cfg_t.get("solids_g_per_L") and solid is None:
             solid = cfg_t["solids_g_per_L"]
         if solid is None and "solid_g_per_L" in data:

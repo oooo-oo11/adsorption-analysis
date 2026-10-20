@@ -358,28 +358,40 @@ def write_html(out: Path, data, qc, iso_best, iso_fits, kin_best, kin_fits, ipd,
                 "removal_pct": "吸附率 / %", "issue": "问题", "suggestion": "建议"})
             + "</div>")
 
+    # 固液比说明只写本次数据中实际出现的矿物：
+    # config.json 里其他体系的默认值一概不列，避免读起来像"这些数据也用了"；
+    # 数据里有样品却查不到固液比的，明确说明其 qe 仍以 mg/L(悬浮液) 计。
+    present_minerals: list[str] = []
+    if "mineral" in data:
+        for m in data["mineral"].dropna():
+            nm = names.mineral(str(m))
+            if nm not in present_minerals:
+                present_minerals.append(nm)
     if isinstance(solid, dict):
-        # 只列本次数据里真正出现的矿物：config 里可能还留着别的体系，
-        # 全列出来会让表格读起来像"这些数据也用了"。
-        present = ({names.mineral(str(x)) for x in data["mineral"].dropna()}
-                   if "mineral" in data else set())
-        shown = [(k, v) for k, v in solid.items()
-                 if isinstance(v, (int, float)) and np.isfinite(v) and v > 0
-                 and (not present or names.mineral(k) in present)]
-        if not shown:
-            shown = [(k, v) for k, v in solid.items()
-                     if isinstance(v, (int, float)) and np.isfinite(v) and v > 0]
-        pairs = "、".join(f"{k} {v:g} g/L" for k, v in shown)
-        solid_line = (f"固液比 m/V 按矿物分别取值：{pairs}。qe = (C0−Ce)/(m/V)，单位为 mg/g。"
-                      if pairs else
-                      "未提供固液比 m/V：qe 记为 (C0−Ce)，单位为 mg/L(悬浮液)。")
-        has_solid = bool(pairs)
+        lookup = {names.mineral(str(k)): float(v) for k, v in solid.items()
+                  if isinstance(v, (int, float)) and np.isfinite(v) and v > 0}
+        have = [(m, lookup[m]) for m in present_minerals if m in lookup]
+        missing = [m for m in present_minerals if m not in lookup]
+    elif isinstance(solid, (int, float)) and np.isfinite(solid) and solid > 0:
+        have = [(m, float(solid)) for m in present_minerals]
+        missing = []
     else:
-        has_solid = bool(solid)
-        solid_line = (f"固液比 m/V = {solid:g} g/L，qe = (C0−Ce)/(m/V)，单位 mg/g。"
-                      if has_solid else
-                      "未提供固液比 m/V：qe 记为 (C0−Ce)，单位为 mg/L(悬浮液)。"
-                      "填入 <code>config.json</code> 的 <code>solids_g_per_L</code> 后重跑即可换算为 mg/g。")
+        have, missing = [], list(present_minerals)
+    pairs = "、".join(f"{m} {v:g} g/L" for m, v in have)
+    miss_txt = "、".join(missing)
+    if have and not missing:
+        solid_line = (f"固液比 m/V 按矿物分别取值：{pairs}。qe = (C0−Ce)/(m/V)，单位为 mg/g。")
+        has_solid = True
+    elif have:
+        solid_line = (f"固液比 m/V：{pairs}；{miss_txt} 未提供固液比，"
+                      "其吸附量以 (C0−Ce) 计，单位为 mg/L(悬浮液)。")
+        has_solid = False
+    else:
+        solid_line = (f"未提供固液比 m/V（{miss_txt or '数据中出现的矿物'}）："
+                      "qe 记为 (C0−Ce)，单位为 mg/L(悬浮液)。"
+                      "在 config.json 的 solids_g_per_L 或模板 Settings 的 solid:矿物 行补入后重跑，"
+                      "即可换算为 mg/g。")
+        has_solid = False
     qe_note = ("纵轴为 mg/g" if has_solid
                else "纵轴以 mg/L(悬浮液) 计，未换算为 mg/g")
     files = [f for f in dict.fromkeys(data.get("file", [])) if isinstance(f, str)]
@@ -513,7 +525,7 @@ def write_html(out: Path, data, qc, iso_best, iso_fits, kin_best, kin_fits, ipd,
 <h2>三、吸附动力学</h2>
 <p>动力学以 qt=(C0−Ct)/(m/V) 表示；未提供 m/V 时以 mg/L(悬浮液) 表示，曲线形状与 k 不受影响。
 对每组数据同时拟合全部动力学模型，并分段拟合 qt–t<sup>0.5</sup> 判别颗粒内扩散阶段。</p>
-{_img(fig_dir / "kinetics.png", "图 3 动力学曲线（误差棒为 SD，仅平行样才画）、AICc 最优模型及 PFO / PSO 参照；横轴取对数以展开 5 min–5 d 的时间跨度")}
+{_img(fig_dir / "kinetics.png", "图 3 动力学曲线（误差棒为 SD，仅平行样才画）、AICc 最优模型及 PFO / PSO 参照；横轴为线性时间（h），早期快速吸附阶段位于坐标原点附近")}
 {_img(fig_dir / "ipd.png", "图 4 颗粒内扩散分段拟合；两段直线的交点即转折时间")}
 <h3>全部模型参数（组内按 R² 降序）</h3>
 {_table(_all_param_rows(kin_fits, "kinetics"), allow_html=("参数",))}

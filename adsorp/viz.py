@@ -139,6 +139,15 @@ def plot_isotherms(curves: dict, out: Path, qe_unit: str | None = None):
 # 动力学
 # --------------------------------------------------------------------------
 
+def _nice_ceil(v: float) -> float:
+    """把时间轴上限取整到好看的刻度（约 5–6 个主刻度，如 300 → 0/50/…/300）。"""
+    v = max(float(v), 1.0)
+    for step in (5, 10, 20, 25, 50, 100, 200, 500):
+        if v <= step * 6:
+            return float(np.ceil(v / step) * step)
+    return float(np.ceil(v / 1000.0) * 1000.0)
+
+
 def plot_kinetics(curves: dict, out: Path, qt_unit: str | None = None):
     if not curves:
         return
@@ -150,8 +159,10 @@ def plot_kinetics(curves: dict, out: Path, qt_unit: str | None = None):
         x = np.asarray(d["time_h"], float)
         y = np.asarray(d["qt"], float)
 
-        xlo, xhi = float(np.nanmin(x)) * 0.45, float(np.nanmax(x)) * 2.2
-        grid = np.logspace(np.log10(xlo), np.log10(xhi), 360)
+        # 横轴：线性时间（0 → 取整上限），对齐参考版式；
+        # 原对数轴实现完整保留在 adsorp/viz_原版备份.py，回退时改名 viz.py 覆盖即可。
+        xhi = _nice_ceil(float(np.nanmax(x)) * 1.03)
+        grid = np.linspace(0.0, xhi, 400)
 
         cmax = 0.0
         for key in _draw_keys(c, ("pfo", "pso")):
@@ -164,9 +175,9 @@ def plot_kinetics(curves: dict, out: Path, qt_unit: str | None = None):
 
         S.data_marker(ax, x, y, mineral, bg, yerr=_err(d.get("qt_sd")))
         top = _headroom(float(np.nanmax(y)), cmax)
-        S.axis(ax, "Time (h)", f"Q$_t$ ({unit})", xscale="log",
+        S.axis(ax, "Time (h)", f"Q$_t$ ({unit})",
                ylim=S.ylim_data(float(np.nanmin(y)), top))
-        ax.set_xlim(xlo, xhi)
+        ax.set_xlim(*S.xlim0(0.0, xhi))
         _panel(ax, letter, mineral, bg)
         # R² 太低时图例不加 (best) 标记，说明写在图注里，图上不再叠红字。
         S.legend(ax)
@@ -202,7 +213,7 @@ def plot_ipd(curves: dict, out: Path, qt_unit: str | None = None):
 
         S.data_marker(ax, s, y, mineral, bg)
         top = _headroom(float(np.nanmax(y)), 0.0)
-        S.axis(ax, r"$t^{0.5}$ (h$^{0.5}$)", f"Q$_t$ ({unit})",
+        S.axis(ax, r"$t^{1/2}$ (h$^{1/2}$)", f"Q$_t$ ({unit})",
                ylim=S.ylim_data(float(np.nanmin(y)), top))
         ax.set_xlim(*S.xlim0(0.0, float(np.nanmax(s)) * 1.05))
         _panel(ax, letter, mineral, bg)
