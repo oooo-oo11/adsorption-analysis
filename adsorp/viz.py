@@ -100,10 +100,10 @@ def _panel(ax, letter: str, mineral: str, bg: str):
 # --------------------------------------------------------------------------
 
 def plot_isotherms(curves: dict, out: Path, qe_unit: str | None = None):
-    """等温线：默认线性 Ce 轴（wang2026 版式），并另存一份对数轴版本。
+    """等温线：默认线性 Ce 轴，并另存一份对数轴版本。
 
     两个版本都写入 output/figures/（``isotherm.*`` 与 ``isotherm_log.*``），
-    HTML 报告里提供横坐标切换；原始数据点和对数轴实现见 viz_原版备份.py。
+    HTML 报告里提供横坐标切换；原始对数轴实现见 viz_原版备份.py。
     """
     _isotherms(curves, out, qe_unit, xscale="linear")
     _isotherms(curves, out.with_name(out.stem + "_log" + out.suffix),
@@ -167,7 +167,7 @@ def _nice_ceil(v: float) -> float:
 
 
 def plot_kinetics(curves: dict, out: Path, qt_unit: str | None = None):
-    """动力学：默认线性时间轴（wang2026 版式），并另存一份对数轴版本。"""
+    """动力学：默认线性时间轴，并另存一份对数轴版本。"""
     _kinetics(curves, out, qt_unit, xscale="linear")
     _kinetics(curves, out.with_name(out.stem + "_log" + out.suffix),
               qt_unit, xscale="log")

@@ -189,19 +189,20 @@ def _code_block(stem: str) -> str:
 def _img(path: Path, caption: str, fname: str | None = None) -> str:
     """内嵌图片 + PNG/PDF 单图下载按钮 + 该图的绘图代码（可折叠）。
 
-    图片以 base64 内嵌，因此报告单独转发也能显示；下载链接用 ``download``
-    属性指向同一条 data URI，离线双击 HTML 即可存图，无需服务器。
+    图片以 base64 内嵌，报告单独转发也能显示。下载按钮指向报告旁
+    ``figures/`` 文件夹里的同名文件（相对路径）——不用 ``data:`` 链接下载，
+    是因为 Chrome/Edge 会给 data: 链接保存的文件打上"来自 Internet"标记
+    （Mark-of-the-Web），默认安全设置下双击打开会被 Windows 拦截。
     """
     if not path.exists():
         return ""
     stem = fname or path.stem
     b64 = base64.b64encode(path.read_bytes()).decode()
-    links = [f'<a download="{stem}.png" href="data:image/png;base64,{b64}">'
+    links = [f'<a download="{stem}.png" href="figures/{path.name}">'
              f"下载 PNG（300 dpi）</a>"]
     pdf = path.with_suffix(".pdf")
     if pdf.exists():
-        pb = base64.b64encode(pdf.read_bytes()).decode()
-        links.append(f'<a download="{stem}.pdf" href="data:application/pdf;base64,{pb}">'
+        links.append(f'<a download="{stem}.pdf" href="figures/{pdf.name}">'
                      f"下载 PDF（矢量）</a>")
     links.append(f'<span class="src">源文件：figures/{path.name} ｜ 代码：adsorp/viz.py</span>')
     return (f'<figure><img src="data:image/png;base64,{b64}" alt="{caption}">'
@@ -226,11 +227,10 @@ def _img_switch(fig_dir: Path, stem: str, alt_stem: str, caption: str) -> str:
         disp = "" if ver == "lin" else ' style="display:none"'
         imgs.append(f'<img data-ax="{group}" data-ver="{ver}"{disp} '
                     f'src="data:image/png;base64,{b64}" alt="{caption}">')
-        links = [f'<a download="{st}.png" href="data:image/png;base64,{b64}">'
+        links = [f'<a download="{st}.png" href="figures/{st}.png">'
                  f"下载 PNG（300 dpi）</a>"]
         if pdf.exists():
-            pb = base64.b64encode(pdf.read_bytes()).decode()
-            links.append(f'<a download="{st}.pdf" href="data:application/pdf;base64,{pb}">'
+            links.append(f'<a download="{st}.pdf" href="figures/{st}.pdf">'
                          f"下载 PDF（矢量）</a>")
         links.append(f'<span class="src">源文件：figures/{st}.png ｜ 代码：adsorp/viz.py</span>')
         dls.append(f'<div class="dl" data-ax="{group}" data-ver="{ver}"{disp}>'
@@ -239,9 +239,9 @@ def _img_switch(fig_dir: Path, stem: str, alt_stem: str, caption: str) -> str:
         return ""
     switch = (f'<div class="axswitch"><b>横坐标：</b>'
               f'<label><input type="radio" name="ax_{group}" value="lin" checked '
-              f'onchange="axSwitch(this)">线性（wang2026 版式）</label>'
+              f'onchange="axSwitch(this)">线性</label>'
               f'<label><input type="radio" name="ax_{group}" value="log" '
-              f'onchange="axSwitch(this)">对数（原版）</label></div>')
+              f'onchange="axSwitch(this)">对数</label></div>')
     return (f'<figure>{switch}{"".join(imgs)}'
             f"<figcaption>{caption}</figcaption>"
             f'{"".join(dls)}{_code_block(stem)}</figure>')
@@ -450,7 +450,7 @@ def write_html(out: Path, data, qc, iso_best, iso_fits, kin_best, kin_fits, ipd,
     iso_caption = ("图 1 等温线实测点（误差棒为 SD，仅平行样才画）、AICc 最优模型"
                    "及 Langmuir / Freundlich 参照；最优模型参数触界或严重共线时"
                    "该组只画参照线，判定见“模型可靠性”表；" + qe_note +
-                   "。横轴为残余浓度 C<sub>e</sub>，默认线性坐标（wang2026 版式），"
+                   "。横轴为残余浓度 C<sub>e</sub>，默认线性坐标，"
                    "可在图上方切换为对数坐标")
     qc_valid = qc.dropna(subset=["recovery_pct"]) if not qc.empty else qc
     n_drop = 0 if qc.empty else len(qc) - len(qc_valid)
@@ -527,9 +527,19 @@ def write_html(out: Path, data, qc, iso_best, iso_fits, kin_best, kin_fits, ipd,
     zip_link = ('<a href="figures/figures_en.zip" download="figures_en.zip">'
                 '打包下载全部图件（ZIP，PNG + PDF）</a>' if zip_path.exists() else "")
     fig_section = f"""<h2>七、图件下载与源文件</h2>
-<p>每张图下方都有「下载 PNG / 下载 PDF」按钮：图片以 base64 内嵌在 HTML 中，
-<strong>离线双击本文件即可另存</strong>，不需要联网或服务器，转发给合作者也不会丢图。
-若要按文件取用，图片同时在 <code>output/figures/</code> 下（PNG 300 dpi + 矢量 PDF）。</p>
+<p>每张图下方都有「下载 PNG / 下载 PDF」按钮，指向报告旁 <code>figures/</code> 文件夹里的同名文件
+（PNG 300 dpi + 矢量 PDF）。<strong>请将本报告与 figures 文件夹放在同一目录下保存或转发</strong>——
+图片本身以 base64 内嵌、单独转发 HTML 也能正常显示，但下载按钮需要 figures 文件夹在场。</p>
+<details><summary>下载的 PNG 双击打不开？（"Internet 安全设置阻止打开"）</summary>
+<p style="margin:6px 0 2px">文件<b>并没有损坏</b>：这是 Windows 的 Mark-of-the-Web 机制——
+浏览器会给"从网页下载"落盘的文件附加 Internet 区域标记，而系统的安全设置禁止直接打开带此标记的文件。
+三种解决办法任选：</p>
+<ol style="margin:6px 0 2px 22px">
+<li>右键该 PNG → <b>属性</b> → 常规页底部勾选<b>「解除锁定」</b> → 确定，之后即可正常打开；</li>
+<li>批量解除：PowerShell 执行 <code>Get-ChildItem "C:\\Users\\Uers\\Downloads\\*.png" | Unblock-File</code>；</li>
+<li>直接使用 <code>output/figures/</code> 里的原图——它们由脚本直接写入磁盘，不带网络标记。</li>
+</ol>
+</details>
 <table class="figlist">{"".join(rows)}</table>
 <p style="margin-top:12px">{zip_link}</p>
 <div class="note">图件为纯英文，可直接用于英文稿件；版式 17.2 cm 双栏、Times New Roman、四边细框、刻度朝内。
@@ -569,7 +579,7 @@ def write_html(out: Path, data, qc, iso_best, iso_fits, kin_best, kin_fits, ipd,
 <h2>三、吸附动力学</h2>
 <p>动力学以 qt=(C0−Ct)/(m/V) 表示；未提供 m/V 时以 mg/L(悬浮液) 表示，曲线形状与 k 不受影响。
 对每组数据同时拟合全部动力学模型，并分段拟合 qt–t<sup>0.5</sup> 判别颗粒内扩散阶段。</p>
-{_img_switch(fig_dir, "kinetics", "kinetics_log", "图 3 动力学曲线（误差棒为 SD，仅平行样才画）、AICc 最优模型及 PFO / PSO 参照；横轴为时间，默认线性坐标（wang2026 版式），可在图上方切换为对数坐标")}
+{_img_switch(fig_dir, "kinetics", "kinetics_log", "图 3 动力学曲线（误差棒为 SD，仅平行样才画）、AICc 最优模型及 PFO / PSO 参照；横轴为时间，默认线性坐标，可在图上方切换为对数坐标")}
 {_img(fig_dir / "ipd.png", "图 4 颗粒内扩散分段拟合；两段直线的交点即转折时间")}
 <h3>全部模型参数（组内按 R² 降序）</h3>
 {_table(_all_param_rows(kin_fits, "kinetics"), allow_html=("参数",))}
