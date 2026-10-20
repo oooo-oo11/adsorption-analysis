@@ -59,6 +59,11 @@ figure img{width:100%;border:1px solid var(--line);border-radius:4px}
 .figlist td{padding:7px 9px;border-bottom:1px solid var(--line);vertical-align:middle}
 .figlist td:first-child{white-space:nowrap;font-weight:600;width:110px}
 figcaption{color:var(--muted);font-size:12px;margin-top:6px}
+.axswitch{display:flex;align-items:center;gap:14px;font-size:12.5px;color:#374151;
+          margin:2px 0 6px;flex-wrap:wrap}
+.axswitch b{font-weight:600}
+.axswitch label{display:flex;align-items:center;gap:5px;cursor:pointer;user-select:none}
+.axswitch input{accent-color:var(--accent);margin:0}
 details{margin:10px 0 16px}
 summary{cursor:pointer;color:var(--accent);font-size:13px;margin:8px 0}
 code{background:#f3f4f6;padding:1px 5px;border-radius:3px;font-size:12px}
@@ -203,6 +208,43 @@ def _img(path: Path, caption: str, fname: str | None = None) -> str:
             f"<figcaption>{caption}</figcaption>"
             f'<div class="dl">{" · ".join(links)}</div>'
             f"{_code_block(path.stem)}</figure>")
+
+
+def _img_switch(fig_dir: Path, stem: str, alt_stem: str, caption: str) -> str:
+    """带横坐标切换的图：``stem``＝默认线性版（wang2026 版式），``alt_stem``＝对数版。
+
+    两版 PNG/PDF 都以 base64 内嵌，单选按钮切换显示；下载链接跟随所选版本。
+    任何一个版本文件缺失时自动跳过，两版都缺则返回空串。
+    """
+    group = stem
+    imgs, dls = [], []
+    for ver, st in (("lin", stem), ("log", alt_stem)):
+        png, pdf = fig_dir / f"{st}.png", fig_dir / f"{st}.pdf"
+        if not png.exists():
+            continue
+        b64 = base64.b64encode(png.read_bytes()).decode()
+        disp = "" if ver == "lin" else ' style="display:none"'
+        imgs.append(f'<img data-ax="{group}" data-ver="{ver}"{disp} '
+                    f'src="data:image/png;base64,{b64}" alt="{caption}">')
+        links = [f'<a download="{st}.png" href="data:image/png;base64,{b64}">'
+                 f"下载 PNG（300 dpi）</a>"]
+        if pdf.exists():
+            pb = base64.b64encode(pdf.read_bytes()).decode()
+            links.append(f'<a download="{st}.pdf" href="data:application/pdf;base64,{pb}">'
+                         f"下载 PDF（矢量）</a>")
+        links.append(f'<span class="src">源文件：figures/{st}.png ｜ 代码：adsorp/viz.py</span>')
+        dls.append(f'<div class="dl" data-ax="{group}" data-ver="{ver}"{disp}>'
+                   f'{" · ".join(links)}</div>')
+    if not imgs:
+        return ""
+    switch = (f'<div class="axswitch"><b>横坐标：</b>'
+              f'<label><input type="radio" name="ax_{group}" value="lin" checked '
+              f'onchange="axSwitch(this)">线性（wang2026 版式）</label>'
+              f'<label><input type="radio" name="ax_{group}" value="log" '
+              f'onchange="axSwitch(this)">对数（原版）</label></div>')
+    return (f'<figure>{switch}{"".join(imgs)}'
+            f"<figcaption>{caption}</figcaption>"
+            f'{"".join(dls)}{_code_block(stem)}</figure>')
 
 
 def _audit_summary(audit: pd.DataFrame) -> pd.DataFrame:
@@ -407,7 +449,9 @@ def write_html(out: Path, data, qc, iso_best, iso_fits, kin_best, kin_fits, ipd,
 
     iso_caption = ("图 1 等温线实测点（误差棒为 SD，仅平行样才画）、AICc 最优模型"
                    "及 Langmuir / Freundlich 参照；最优模型参数触界或严重共线时"
-                   "该组只画参照线，判定见“模型可靠性”表；" + qe_note)
+                   "该组只画参照线，判定见“模型可靠性”表；" + qe_note +
+                   "。横轴为残余浓度 C<sub>e</sub>，默认线性坐标（wang2026 版式），"
+                   "可在图上方切换为对数坐标")
     qc_valid = qc.dropna(subset=["recovery_pct"]) if not qc.empty else qc
     n_drop = 0 if qc.empty else len(qc) - len(qc_valid)
     qc_note_line = (f'<div class="note">另有 {n_drop} 条 QC 记录未给出校正终液浓度（表中记 —），'
@@ -475,11 +519,11 @@ def write_html(out: Path, data, qc, iso_best, iso_fits, kin_best, kin_fits, ipd,
     zip_path = fig_dir / "figures_en.zip"
     if stems:
         with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as z:
-            for stem in stems:
-                for ext in (".png", ".pdf"):
-                    f = fig_dir / f"{stem}{ext}"
-                    if f.exists():
-                        z.write(f, f.name)
+            # 打包目录里全部 PNG/PDF：除 6 张主图外，还包含等温线/动力学的
+            # 对数横坐标版本（isotherm_log.* / kinetics_log.*）
+            for f in sorted(fig_dir.iterdir()):
+                if f.suffix in (".png", ".pdf"):
+                    z.write(f, f.name)
     zip_link = ('<a href="figures/figures_en.zip" download="figures_en.zip">'
                 '打包下载全部图件（ZIP，PNG + PDF）</a>' if zip_path.exists() else "")
     fig_section = f"""<h2>七、图件下载与源文件</h2>
@@ -513,7 +557,7 @@ def write_html(out: Path, data, qc, iso_best, iso_fits, kin_best, kin_fits, ipd,
 <h2>二、吸附等温线</h2>
 <p>对每组数据同时拟合全部等温线模型并按 AICc 排序；Ce 或 qe ≤ 0 的点超出模型定义域，
 自动跳过（各类模型的拟合点数见 <code>tables/等温线_全部模型.csv</code>）。</p>
-{_img(fig_dir / "isotherm.png", iso_caption)}
+{_img_switch(fig_dir, "isotherm", "isotherm_log", iso_caption)}
 {_img(fig_dir / "residuals.png", "图 2 最优模型的相对残差–实测值；虚线为 ±10%。纵轴按残差的稳健范围（中位数 + 3×MAD）自适应，低负载点的相对误差会被检出限放大，个别点因此落在框外；原始残差见 tables/长表数据.csv")}
 <h3>全部模型参数（组内按 R² 降序）</h3>
 <p>ΔAICc 以同组最优模型为 0，≤2 表示与最优无实质差别；
@@ -525,7 +569,7 @@ def write_html(out: Path, data, qc, iso_best, iso_fits, kin_best, kin_fits, ipd,
 <h2>三、吸附动力学</h2>
 <p>动力学以 qt=(C0−Ct)/(m/V) 表示；未提供 m/V 时以 mg/L(悬浮液) 表示，曲线形状与 k 不受影响。
 对每组数据同时拟合全部动力学模型，并分段拟合 qt–t<sup>0.5</sup> 判别颗粒内扩散阶段。</p>
-{_img(fig_dir / "kinetics.png", "图 3 动力学曲线（误差棒为 SD，仅平行样才画）、AICc 最优模型及 PFO / PSO 参照；横轴为线性时间（h），早期快速吸附阶段位于坐标原点附近")}
+{_img_switch(fig_dir, "kinetics", "kinetics_log", "图 3 动力学曲线（误差棒为 SD，仅平行样才画）、AICc 最优模型及 PFO / PSO 参照；横轴为时间，默认线性坐标（wang2026 版式），可在图上方切换为对数坐标")}
 {_img(fig_dir / "ipd.png", "图 4 颗粒内扩散分段拟合；两段直线的交点即转折时间")}
 <h3>全部模型参数（组内按 R² 降序）</h3>
 {_table(_all_param_rows(kin_fits, "kinetics"), allow_html=("参数",))}
@@ -571,6 +615,14 @@ def write_html(out: Path, data, qc, iso_best, iso_fits, kin_best, kin_fits, ipd,
 {fig_section}
 <div class="foot">本报告由 <code>python -m adsorp.cli run</code>（或 <code>run_analysis.py</code>）自动生成；所有数值表同时导出至
 <code>结果汇总.xlsx</code>，长表数据见 <code>tables/长表数据.csv</code>。</div>
+<script>
+function axSwitch(inp) {{
+  var g = inp.name.replace(/^ax_/, "");
+  document.querySelectorAll('[data-ax="' + g + '"]').forEach(function (el) {{
+    el.style.display = (el.getAttribute("data-ver") === inp.value) ? "" : "none";
+  }});
+}}
+</script>
 </div></body></html>"""
     path = out / "报告.html"
     path.write_text(html, encoding="utf-8")

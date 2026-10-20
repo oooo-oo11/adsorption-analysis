@@ -100,6 +100,17 @@ def _panel(ax, letter: str, mineral: str, bg: str):
 # --------------------------------------------------------------------------
 
 def plot_isotherms(curves: dict, out: Path, qe_unit: str | None = None):
+    """等温线：默认线性 Ce 轴（wang2026 版式），并另存一份对数轴版本。
+
+    两个版本都写入 output/figures/（``isotherm.*`` 与 ``isotherm_log.*``），
+    HTML 报告里提供横坐标切换；原始数据点和对数轴实现见 viz_原版备份.py。
+    """
+    _isotherms(curves, out, qe_unit, xscale="linear")
+    _isotherms(curves, out.with_name(out.stem + "_log" + out.suffix),
+               qe_unit, xscale="log")
+
+
+def _isotherms(curves: dict, out: Path, qe_unit: str | None, *, xscale: str):
     if not curves:
         return
     items = list(curves.items())
@@ -110,8 +121,12 @@ def plot_isotherms(curves: dict, out: Path, qe_unit: str | None = None):
         x = np.asarray(d["Ce_ppm"], float)
         y = np.asarray(d["qe"], float)
 
-        xlo, xhi = float(np.nanmin(x)) * 0.55, float(np.nanmax(x)) * 1.45
-        grid = np.logspace(np.log10(xlo), np.log10(xhi), 360)
+        if xscale == "log":
+            xlo, xhi = float(np.nanmin(x)) * 0.55, float(np.nanmax(x)) * 1.45
+            grid = np.logspace(np.log10(xlo), np.log10(xhi), 360)
+        else:
+            xlo, xhi = 0.0, _nice_ceil(float(np.nanmax(x)) * 1.05)
+            grid = np.linspace(0.0, xhi, 400)
 
         ok = _usable(best)
         cmax = 0.0
@@ -125,9 +140,12 @@ def plot_isotherms(curves: dict, out: Path, qe_unit: str | None = None):
 
         S.data_marker(ax, x, y, mineral, bg, yerr=_err(d.get("qe_sd")))
         top = _headroom(float(np.nanmax(y)), cmax)
-        S.axis(ax, "C$_e$ (mg/L)", f"Q$_e$ ({unit})", xscale="log",
+        S.axis(ax, "C$_e$ (mg/L)", f"Q$_e$ ({unit})", xscale=xscale,
                ylim=S.ylim_data(float(np.nanmin(y)), top))
-        ax.set_xlim(xlo, xhi)
+        if xscale == "log":
+            ax.set_xlim(xlo, xhi)
+        else:
+            ax.set_xlim(*S.xlim0(0.0, xhi))
         _panel(ax, letter, mineral, bg)
         # 最优模型参数触界时不再往图上写红字，只画可解释的参照线；
         # 该组的具体情况写进报告正文的模型可靠性表。
@@ -149,6 +167,13 @@ def _nice_ceil(v: float) -> float:
 
 
 def plot_kinetics(curves: dict, out: Path, qt_unit: str | None = None):
+    """动力学：默认线性时间轴（wang2026 版式），并另存一份对数轴版本。"""
+    _kinetics(curves, out, qt_unit, xscale="linear")
+    _kinetics(curves, out.with_name(out.stem + "_log" + out.suffix),
+              qt_unit, xscale="log")
+
+
+def _kinetics(curves: dict, out: Path, qt_unit: str | None, *, xscale: str):
     if not curves:
         return
     items = list(curves.items())
@@ -159,10 +184,13 @@ def plot_kinetics(curves: dict, out: Path, qt_unit: str | None = None):
         x = np.asarray(d["time_h"], float)
         y = np.asarray(d["qt"], float)
 
-        # 横轴：线性时间（0 → 取整上限），对齐参考版式；
-        # 原对数轴实现完整保留在 adsorp/viz_原版备份.py，回退时改名 viz.py 覆盖即可。
-        xhi = _nice_ceil(float(np.nanmax(x)) * 1.03)
-        grid = np.linspace(0.0, xhi, 400)
+        if xscale == "log":
+            xlo, xhi = float(np.nanmin(x)) * 0.45, float(np.nanmax(x)) * 2.2
+            grid = np.logspace(np.log10(xlo), np.log10(xhi), 360)
+        else:
+            # 横轴：线性时间（0 → 取整上限），对齐参考版式
+            xlo, xhi = 0.0, _nice_ceil(float(np.nanmax(x)) * 1.03)
+            grid = np.linspace(0.0, xhi, 400)
 
         cmax = 0.0
         for key in _draw_keys(c, ("pfo", "pso")):
@@ -175,9 +203,12 @@ def plot_kinetics(curves: dict, out: Path, qt_unit: str | None = None):
 
         S.data_marker(ax, x, y, mineral, bg, yerr=_err(d.get("qt_sd")))
         top = _headroom(float(np.nanmax(y)), cmax)
-        S.axis(ax, "Time (h)", f"Q$_t$ ({unit})",
+        S.axis(ax, "Time (h)", f"Q$_t$ ({unit})", xscale=xscale,
                ylim=S.ylim_data(float(np.nanmin(y)), top))
-        ax.set_xlim(*S.xlim0(0.0, xhi))
+        if xscale == "log":
+            ax.set_xlim(xlo, xhi)
+        else:
+            ax.set_xlim(*S.xlim0(0.0, xhi))
         _panel(ax, letter, mineral, bg)
         # R² 太低时图例不加 (best) 标记，说明写在图注里，图上不再叠红字。
         S.legend(ax)
