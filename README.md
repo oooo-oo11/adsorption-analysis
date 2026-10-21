@@ -15,7 +15,7 @@ cd "C:\Users\Uers\Desktop\分析"
 # 方式 A：把自己的工作簿放进 data\，直接跑（最常用）
 .\adsorp.bat run
 
-# 方式 B：读填好的 Excel 模板（推荐，含固液比等元数据）
+# 方式 B：读填好的 Excel 模板（含固液比等元数据，适合精确复现）
 .\adsorp.bat run --template templates/吸附数据_已填示例.xlsx --out output
 
 # 只重新出图与报告，不重跑拟合（调图版式时用，约 20 秒）
