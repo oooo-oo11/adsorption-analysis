@@ -51,8 +51,36 @@ def _unit(solid):
     return "mg/L(悬浮液)" if not solid else "mg/g"
 
 
-def _label(row):
-    return f"{row['mineral']}-{row['background']}"
+def _split_excluded(g: pd.DataFrame):
+    """拆成（参与拟合的行, 被 exclude 标记的行, 剔除数）。
+
+    模板里只有 ``exclude`` 列能剔除数据；没有该列时视为全部保留。
+    """
+    if "exclude" not in g:
+        return g, g.iloc[0:0], 0
+    mask = g["exclude"].astype(bool)
+    return g[~mask], g[mask], int(mask.sum())
+
+
+# 三类实验：(字段名, 显示名, 独立条件列, 最少点数)
+EXP_SPECS = (
+    ("isotherm", "等温线", "C0_ppm", 5),
+    ("kinetics", "动力学", "time_h", 5),
+    ("edge", "吸附边", "pH", 4),
+)
+
+
+def _short_groups(iso: pd.DataFrame, kin: pd.DataFrame, edge: pd.DataFrame):
+    """点数不足的组：``(exp, 显示名, 矿物, 背景, 条件列, 实际点数, 需要点数)``。"""
+    frames = {"isotherm": iso, "kinetics": kin, "edge": edge}
+    for exp, label, col, need in EXP_SPECS:
+        frame = frames[exp]
+        if frame is None or frame.empty or col not in frame:
+            continue
+        for (m, bg), g in frame.groupby(["mineral", "background"], sort=False):
+            n = int(g[col].nunique())
+            if n < need:
+                yield exp, label, m, bg, col, n, need
 
 
 # --------------------------------------------------------------------------
@@ -88,11 +116,9 @@ def analyze_isotherms(df: pd.DataFrame, solid: float | None):
 
     for (mineral, background), g in df.groupby(["mineral", "background"], sort=False):
         g = g.dropna(subset=["Ce_ppm", "qe"])
-        n_excluded = int(g["exclude"].sum()) if "exclude" in g else 0
+        g, excl, n_excluded = _split_excluded(g)
         if n_excluded:
             warns.append(f"{mineral}-{background}：{n_excluded} 个点被备注标记为异常/存疑，已从拟合中剔除。")
-        excl = g[g["exclude"]] if "exclude" in g else g.iloc[0:0]
-        g = g[~g["exclude"]] if "exclude" in g else g
         if g.empty:
             continue
         # 同一初始浓度的重复点取均值
@@ -218,11 +244,9 @@ def analyze_kinetics(df: pd.DataFrame, solid: float | None):
         return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), curves, ["动力学：无有效数据"]
 
     for (mineral, background), g in df.groupby(["mineral", "background"], sort=False):
-        n_excluded = int(g["exclude"].sum()) if "exclude" in g else 0
+        g, excl, n_excluded = _split_excluded(g)
         if n_excluded:
             warns.append(f"{mineral}-{background}：{n_excluded} 个时间点被备注标记为异常/存疑，已从拟合中剔除。")
-        excl = g[g["exclude"]] if "exclude" in g else g.iloc[0:0]
-        g = g[~g["exclude"]] if "exclude" in g else g
         agg = (g.groupby("time_h", as_index=False)
                  .agg(U=("U", "mean"), U_sd=("U", "std"), n_rep=("U", "size"),
                       qt=("qt", "mean"), qt_sd=("qt", "std")))
@@ -349,10 +373,9 @@ def analyze_edges(df: pd.DataFrame):
         return pd.DataFrame(), curves, pd.DataFrame(), ["吸附边：无有效数据"]
 
     for (mineral, background), g in df.groupby(["mineral", "background"], sort=False):
-        n_excluded = int(g["exclude"].sum()) if "exclude" in g else 0
+        g, _, n_excluded = _split_excluded(g)
         if n_excluded:
             warns.append(f"{mineral}-{background}：{n_excluded} 个 pH 点被备注标记为异常，已从拟合中剔除。")
-        g = g[~g["exclude"]] if "exclude" in g else g
         agg = (g.groupby("pH", as_index=False)
                  .agg(theta=("theta", "mean"), theta_sd=("theta", "std"),
                       n_rep=("theta", "size")))
@@ -558,20 +581,16 @@ def quality_issues(data: pd.DataFrame, iso: pd.DataFrame, kin: pd.DataFrame,
                      "Ce 低于检出下限或空白扣除过度，建议复测该点")
 
     # ---- 组级：点数与平行样离散 ----
-    groups = [("isotherm", iso, "C0_ppm", 5, "等温线"),
-              ("kinetics", kin, "time_h", 5, "动力学"),
-              ("edge", edge, "pH", 4, "吸附边")]
-    for exp, frame, col, need, label in groups:
+    for exp, label, m, bg, col, n, need in _short_groups(iso, kin, edge):
+        rows.append({"exp": exp, "mineral": m, "background": bg,
+                     "row": np.nan, "condition": f"{n} 个独立{col.replace('_ppm','')}点",
+                     "Ce_ppm": np.nan, "removal_pct": np.nan,
+                     "issue": f"点数不足（{n} < {need}）",
+                     "suggestion": f"{label}模型参数不宜引用，建议补点或减少模型参数"})
+    for (exp, _label, col, _need), frame in zip(EXP_SPECS, (iso, kin, edge)):
         if frame is None or frame.empty or col not in frame:
             continue
         for (m, bg), g in frame.groupby(["mineral", "background"], sort=False):
-            n = int(g[col].nunique())
-            if n < need:
-                rows.append({"exp": exp, "mineral": m, "background": bg,
-                             "row": np.nan, "condition": f"{n} 个独立{col.replace('_ppm','')}点",
-                             "Ce_ppm": np.nan, "removal_pct": np.nan,
-                             "issue": f"点数不足（{n} < {need}）",
-                             "suggestion": f"{label}模型参数不宜引用，建议补点或减少模型参数"})
             dup = g[g.duplicated(col, keep=False)]
             for key, gg in dup.groupby(col):
                 if len(gg) < 2:
@@ -618,16 +637,9 @@ def data_warnings(iso: pd.DataFrame, kin: pd.DataFrame, edge: pd.DataFrame, qc: 
     每行带 Excel 行号与建议动作。空值（使用者已删的点）不提示。
     """
     out = []
-    for name, frame, col, need in (("等温线", iso, "C0_ppm", 5),
-                                   ("动力学", kin, "time_h", 5),
-                                   ("吸附边", edge, "pH", 4)):
-        if frame is None or frame.empty or col not in frame:
-            continue
-        for (mineral, background), g in frame.groupby(["mineral", "background"]):
-            n = int(g[col].nunique())
-            if n < need:
-                out.append(f"{name} {mineral}-{background}：仅 {n} 个独立条件点（< {need}），"
-                           "模型参数不宜引用。")
+    for _exp, label, mineral, background, _col, n, need in _short_groups(iso, kin, edge):
+        out.append(f"{label} {mineral}-{background}：仅 {n} 个独立条件点（< {need}），"
+                   "模型参数不宜引用。")
     if qc is not None and not qc.empty and "recovery_pct" in qc:
         bad = qc[(qc["recovery_pct"] < 80) | (qc["recovery_pct"] > 120)]
         if not bad.empty:

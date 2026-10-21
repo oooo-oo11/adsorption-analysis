@@ -25,7 +25,7 @@ BASE = Path(__file__).resolve().parent.parent
 
 CACHE_KEYS = ["data", "qc", "eq", "ipd", "iso_fits", "iso_best", "curves_iso",
               "kin_fits", "kin_best", "curves_kin", "edge_params", "curves_edge",
-              "edge_cmp", "warns", "audit", "solid", "issues", "meta"]
+              "edge_cmp", "warns", "audit", "solid", "issues"]
 
 
 def load_config(path: Path) -> dict:
@@ -90,14 +90,11 @@ def run(*, data_dir: str | Path | None = None,
                 analyze.kinetics_data(st["data"], _solid),
                 analyze.edge_data(st["data"]),
                 st.get("qc", pd.DataFrame()))
-        return _finish(out, make_figs, verbose, **{k: st.get(k) for k in CACHE_KEYS})
+        return _finish(out, make_figs, verbose, {k: st.get(k) for k in CACHE_KEYS})
 
     if template:
         log(f"[1/5] 读取模板：{template}")
         data, cfg_t, io_warn = read_template(Path(template), defaults=cfg.get("defaults"))
-        # 报告标题等用语从模板 Settings 取（project / analyte），不写死体系
-        _st = cfg_t.get("settings") or {}
-        doc_meta = {k: _st.get(k) for k in ("project", "analyte")}
         # 模板 Settings 的 solid:<矿物> 是本次数据集的固液比，优先于 config.json
         # 的默认值（CLI --solid 标量最高，不被覆盖）。键允许写中文矿物名，
         # 统一经 names 映射到英文显示名后再合并，避免两处写法不一致时静默丢值。
@@ -114,8 +111,6 @@ def run(*, data_dir: str | Path | None = None,
                 solid = tmpl_solids
             elif isinstance(solid, dict):
                 solid = {**solid, **tmpl_solids}
-        if cfg_t.get("solids_g_per_L") and solid is None:
-            solid = cfg_t["solids_g_per_L"]
         if solid is None and "solid_g_per_L" in data:
             per_row = {}
             for m, v in zip(data["mineral"], data["solid_g_per_L"]):
@@ -126,9 +121,7 @@ def run(*, data_dir: str | Path | None = None,
     else:
         data_dir = Path(data_dir or cfg.get("data_dir") or BASE).resolve()
         log(f"[1/5] 读取数据：{data_dir}")
-        data, qc, meta, io_warn = read_all(data_dir, cfg)
-        doc_meta = {k: (meta or {}).get(k) if isinstance(meta, dict) else None
-                    for k in ("project", "analyte")}
+        data, qc, _, io_warn = read_all(data_dir, cfg)
 
     if data.empty:
         raise SystemExit("未解析到数据：请检查模板的 Data 表，或文件名是否包含 等温/动力学/吸附边。")
@@ -163,17 +156,21 @@ def run(*, data_dir: str | Path | None = None,
                  iso_fits=iso_fits, iso_best=iso_best, curves_iso=curves_iso,
                  kin_fits=kin_fits, kin_best=kin_best, curves_kin=curves_kin,
                  edge_params=edge_params, curves_edge=curves_edge, edge_cmp=edge_cmp,
-                 warns=warns, audit=audit, solid=solid, issues=issues, meta=doc_meta)
+                 warns=warns, audit=audit, solid=solid, issues=issues)
     with cache.open("wb") as fh:
         pickle.dump(state, fh)
-    return _finish(out, make_figs, verbose, **state)
+    return _finish(out, make_figs, verbose, state)
 
 
-def _finish(out: Path, make_figs: bool, verbose: bool, *,
-            data, qc, eq, ipd, iso_fits, iso_best, curves_iso,
-            kin_fits, kin_best, curves_kin, edge_params, curves_edge,
-            edge_cmp, warns, audit, solid, issues=None, meta=None) -> dict:
+def _finish(out: Path, make_figs: bool, verbose: bool, st: dict) -> dict:
     """出图 + 导出报告（计算与拟合已完成）。"""
+    data, qc, eq, ipd = st["data"], st["qc"], st["eq"], st["ipd"]
+    iso_fits, iso_best, curves_iso = st["iso_fits"], st["iso_best"], st["curves_iso"]
+    kin_fits, kin_best, curves_kin = st["kin_fits"], st["kin_best"], st["curves_kin"]
+    edge_params, curves_edge, edge_cmp = st["edge_params"], st["curves_edge"], st["edge_cmp"]
+    warns, audit, solid = st["warns"], st["audit"], st["solid"]
+    issues = st.get("issues")
+
     def log(msg: str):
         if verbose:
             print(msg, flush=True)
@@ -213,7 +210,6 @@ def _finish(out: Path, make_figs: bool, verbose: bool, *,
         if frame is not None and not frame.empty:
             frame.to_csv(out / "tables" / f"{name}.csv", index=False, encoding="utf-8-sig")
 
-    solid_note = "" if solid else "若已知固液比，建议在 config.json 或模板 Settings 中填入后重跑。"
     # MATLAB 全模型复核脚本：把本次用到的每一组数据、每一个模型都写进去，
     # 让用户可以在 MATLAB 里独立重拟合、逐模型比对 SSE。
     try:
@@ -226,9 +222,8 @@ def _finish(out: Path, make_figs: bool, verbose: bool, *,
         mfile = None
         warns.append(f"MATLAB 复核脚本生成失败：{exc}")
     html = report.write_html(out, data, qc, iso_best, iso_fits, kin_best, kin_fits,
-                             ipd, eq, edge_params, edge_cmp, curves_iso, curves_kin,
-                             warns, solid, solid_note, audit=audit, issues=issues,
-                             meta=meta)
+                             ipd, edge_params, edge_cmp, curves_iso, curves_kin,
+                             solid, audit=audit, issues=issues)
     xlsx = report.write_excel(out, data, qc, iso_fits, iso_best, kin_fits, kin_best,
                               ipd, eq, edge_params, edge_cmp, audit=audit)
 

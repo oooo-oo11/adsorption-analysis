@@ -11,7 +11,7 @@ from pathlib import Path
 
 import numpy as np
 
-from .models import (ISOTHERM_MODELS, KINETIC_MODELS, M_SB, R_GAS)
+from .models import ISOTHERM_MODELS, KINETIC_MODELS
 
 # MATLAB 端的模型定义：(显示名, 参数个数, 函数名, 参数名 cellstr)
 _ISO_ORDER = ["langmuir", "freundlich", "temkin", "dr", "sips", "toth", "rp"]
@@ -54,7 +54,7 @@ def _ascii_name(text: str) -> str:
 
 
 def _group_block(name: str, curves: dict, lib: dict, keys: list[str],
-                 xcol: str, ycol: str, unit: str) -> str:
+                 xcol: str, ycol: str) -> str:
     from . import names as N
 
     out = []
@@ -314,9 +314,9 @@ def write_verify_script(path: Path, curves_iso: dict, curves_kin: dict,
                      if c.get("unit")), "mg/g")
 
     iso_data = _group_block("ISO", curves_iso, ISOTHERM_MODELS, _ISO_ORDER,
-                            "Ce_ppm", "qe", iso_unit) if curves_iso else "% （本次无等温线数据）\n"
+                            "Ce_ppm", "qe") if curves_iso else "% （本次无等温线数据）\n"
     kin_data = _group_block("KIN", curves_kin, KINETIC_MODELS, _KIN_ORDER,
-                            "time_h", "qt", kin_unit) if curves_kin else "% （本次无动力学数据）\n"
+                            "time_h", "qt") if curves_kin else "% （本次无动力学数据）\n"
 
     text = _HEADER.format(
         stamp=f"{datetime.now():%Y-%m-%d %H:%M}", source=source or "未记录",

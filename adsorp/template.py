@@ -135,6 +135,21 @@ def _settings_frame() -> pd.DataFrame:
     return pd.DataFrame(SETTINGS_ROWS, columns=["key", "value"])
 
 
+def _style_sheets(book, *, freeze_settings: bool) -> None:
+    """列宽、冻结窗格与字体：两个写模板入口共用同一套版式。"""
+    ws = book["Data"]
+    for i, (name, _, _) in enumerate(DATA_COLUMNS, start=1):
+        ws.column_dimensions[ws.cell(row=1, column=i).column_letter].width = \
+            max(11, min(26, len(name) + 6))
+    ws.freeze_panes = "A2"
+    st = book["Settings"]
+    st.column_dimensions["A"].width = 30
+    st.column_dimensions["B"].width = 46
+    if freeze_settings:
+        st.freeze_panes = "A2"
+    _apply_fonts(book)
+
+
 def write_template(path: str | Path) -> Path:
     """生成空白模板（含示例行与说明）。"""
     path = Path(path)
@@ -175,16 +190,7 @@ def write_template(path: str | Path) -> Path:
         readme.column_dimensions["B"].width = 30
         readme.column_dimensions["C"].width = 62
 
-        ws = book["Data"]
-        for i, (name, _, _) in enumerate(DATA_COLUMNS, start=1):
-            ws.column_dimensions[ws.cell(row=1, column=i).column_letter].width = \
-                max(11, min(26, len(name) + 6))
-        ws.freeze_panes = "A2"
-        ws2 = book["Settings"]
-        ws2.column_dimensions["A"].width = 30
-        ws2.column_dimensions["B"].width = 46
-        ws2.freeze_panes = "A2"
-        _apply_fonts(book)
+        _style_sheets(book, freeze_settings=True)
     return path
 
 
@@ -241,14 +247,7 @@ def write_from_data(data: pd.DataFrame, path: str | Path,
             readme.cell(row=i, column=3, value=desc)
         readme.column_dimensions["B"].width = 30
         readme.column_dimensions["C"].width = 62
-        ws = book["Data"]
-        for i, (name, _, _) in enumerate(DATA_COLUMNS, start=1):
-            ws.column_dimensions[ws.cell(row=1, column=i).column_letter].width = \
-                max(11, min(26, len(name) + 6))
-        ws.freeze_panes = "A2"
-        book["Settings"].column_dimensions["A"].width = 30
-        book["Settings"].column_dimensions["B"].width = 46
-        _apply_fonts(book)
+        _style_sheets(book, freeze_settings=False)
     return path
 
 

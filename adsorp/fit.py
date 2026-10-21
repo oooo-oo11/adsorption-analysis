@@ -109,16 +109,13 @@ def _metrics(y, yhat, p) -> dict:
                 are=are, mpsd=mpsd, aic=aic, aicc=aicc)
 
 
-def fit_model(model: Model, x, y, n_starts: int = 40, seed: int = 0,
-              weights=None) -> FitResult | None:
+def fit_model(model: Model, x, y, n_starts: int = 40, seed: int = 0) -> FitResult | None:
     x = np.asarray(x, float)
     y = np.asarray(y, float)
     # 吸附模型的定义域是 Ce>0、qe>0：负值点无法进入函数本身（幂函数/对数会出
     # nan），这里只能跳过。跳过的点数如实回报，由报告写明是哪几行、为什么。
     ok = np.isfinite(x) & np.isfinite(y) & (x > 0) & (y > 0)
     n_skipped = int(x.size - int(np.sum(ok)))
-    if weights is not None:
-        weights = np.asarray(weights, float)[ok]
     x, y = x[ok], y[ok]
     n = len(x)
     if n < model.nparams + 2:
@@ -141,8 +138,6 @@ def fit_model(model: Model, x, y, n_starts: int = 40, seed: int = 0,
         with np.errstate(all="ignore"):
             yhat = model.func(x, p)
         r = yhat - y
-        if weights is not None:
-            r = r * weights
         return np.where(np.isfinite(r), r, 1e6)
 
     best = None

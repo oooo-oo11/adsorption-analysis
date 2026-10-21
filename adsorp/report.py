@@ -5,6 +5,7 @@ import ast
 import base64
 import html as _html
 import textwrap
+import zipfile
 from datetime import datetime
 from pathlib import Path
 
@@ -186,33 +187,36 @@ def _code_block(stem: str) -> str:
     )
 
 
+def _dl_links(png: Path, stem: str) -> str:
+    """单图下载链接：PNG + 可选 PDF + 源文件说明。
+
+    一律用 ``figures/`` 相对路径，不用 ``data:`` 链接——后者保存下来会被
+    打上 Mark-of-the-Web，Windows 默认安全设置会拒绝打开。
+    """
+    links = [f'<a download="{stem}.png" href="figures/{png.name}">下载 PNG（300 dpi）</a>']
+    pdf = png.with_suffix(".pdf")
+    if pdf.exists():
+        links.append(f'<a download="{stem}.pdf" href="figures/{pdf.name}">下载 PDF（矢量）</a>')
+    links.append(f'<span class="src">源文件：figures/{png.name} ｜ 代码：adsorp/viz.py</span>')
+    return " · ".join(links)
+
+
 def _img(path: Path, caption: str, fname: str | None = None) -> str:
     """内嵌图片 + PNG/PDF 单图下载按钮 + 该图的绘图代码（可折叠）。
 
-    图片以 base64 内嵌，报告单独转发也能显示。下载按钮指向报告旁
-    ``figures/`` 文件夹里的同名文件（相对路径）——不用 ``data:`` 链接下载，
-    是因为 Chrome/Edge 会给 data: 链接保存的文件打上"来自 Internet"标记
-    （Mark-of-the-Web），默认安全设置下双击打开会被 Windows 拦截。
+    图片以 base64 内嵌，报告单独转发也能显示。
     """
     if not path.exists():
         return ""
-    stem = fname or path.stem
     b64 = base64.b64encode(path.read_bytes()).decode()
-    links = [f'<a download="{stem}.png" href="figures/{path.name}">'
-             f"下载 PNG（300 dpi）</a>"]
-    pdf = path.with_suffix(".pdf")
-    if pdf.exists():
-        links.append(f'<a download="{stem}.pdf" href="figures/{pdf.name}">'
-                     f"下载 PDF（矢量）</a>")
-    links.append(f'<span class="src">源文件：figures/{path.name} ｜ 代码：adsorp/viz.py</span>')
     return (f'<figure><img src="data:image/png;base64,{b64}" alt="{caption}">'
             f"<figcaption>{caption}</figcaption>"
-            f'<div class="dl">{" · ".join(links)}</div>'
+            f'<div class="dl">{_dl_links(path, fname or path.stem)}</div>'
             f"{_code_block(path.stem)}</figure>")
 
 
 def _img_switch(fig_dir: Path, stem: str, alt_stem: str, caption: str) -> str:
-    """带横坐标切换的图：``stem``＝默认线性版（wang2026 版式），``alt_stem``＝对数版。
+    """带横坐标切换的图：``stem``＝默认线性版，``alt_stem``＝对数版。
 
     两版 PNG/PDF 都以 base64 内嵌，单选按钮切换显示；下载链接跟随所选版本。
     任何一个版本文件缺失时自动跳过，两版都缺则返回空串。
@@ -220,21 +224,15 @@ def _img_switch(fig_dir: Path, stem: str, alt_stem: str, caption: str) -> str:
     group = stem
     imgs, dls = [], []
     for ver, st in (("lin", stem), ("log", alt_stem)):
-        png, pdf = fig_dir / f"{st}.png", fig_dir / f"{st}.pdf"
+        png = fig_dir / f"{st}.png"
         if not png.exists():
             continue
         b64 = base64.b64encode(png.read_bytes()).decode()
         disp = "" if ver == "lin" else ' style="display:none"'
         imgs.append(f'<img data-ax="{group}" data-ver="{ver}"{disp} '
                     f'src="data:image/png;base64,{b64}" alt="{caption}">')
-        links = [f'<a download="{st}.png" href="figures/{st}.png">'
-                 f"下载 PNG（300 dpi）</a>"]
-        if pdf.exists():
-            links.append(f'<a download="{st}.pdf" href="figures/{st}.pdf">'
-                         f"下载 PDF（矢量）</a>")
-        links.append(f'<span class="src">源文件：figures/{st}.png ｜ 代码：adsorp/viz.py</span>')
         dls.append(f'<div class="dl" data-ax="{group}" data-ver="{ver}"{disp}>'
-                   f'{" · ".join(links)}</div>')
+                   f"{_dl_links(png, st)}</div>")
     if not imgs:
         return ""
     switch = (f'<div class="axswitch"><b>横坐标：</b>'
@@ -369,8 +367,8 @@ def _model_legend_table() -> pd.DataFrame:
 
 
 def write_html(out: Path, data, qc, iso_best, iso_fits, kin_best, kin_fits, ipd,
-               kin_eq, edge_params, edge_cmp, curves_iso, curves_kin, warns,
-               solid, solid_note, audit=None, issues=None, meta=None):
+               edge_params, edge_cmp, curves_iso, curves_kin,
+               solid, audit=None, issues=None):
     fig_dir = out / "figures"
     n_issue = 0 if issues is None or issues.empty else len(issues)
     kpis = [
@@ -496,8 +494,6 @@ def write_html(out: Path, data, qc, iso_best, iso_fits, kin_best, kin_fits, ipd,
                 "<p>判读：<b>relDiff &lt; 1e-6%</b> → 两条路径收敛到同一最优解，Python 结果可信；"
                 "若 MATLAB 找到明显更低的 SSE，说明本项目落入局部极小，以 MATLAB 结果为准并复核该模型。"
                 "逐模型对比结果可直接复制脚本输出留存。</p>")
-
-    import zipfile
 
     fig_items = [("图 1", "等温线 Isotherm", "isotherm"),
                  ("图 2", "残差 Residuals", "residuals"),

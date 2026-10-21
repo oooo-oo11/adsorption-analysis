@@ -96,69 +96,11 @@ def _panel(ax, letter: str, mineral: str, bg: str):
 
 
 # --------------------------------------------------------------------------
-# 等温线
-# --------------------------------------------------------------------------
-
-def plot_isotherms(curves: dict, out: Path, qe_unit: str | None = None):
-    """等温线：默认线性 Ce 轴，并另存一份对数轴版本。
-
-    两个版本都写入 output/figures/（``isotherm.*`` 与 ``isotherm_log.*``），
-    HTML 报告里提供横坐标切换；原始对数轴实现见 viz_原版备份.py。
-    """
-    _isotherms(curves, out, qe_unit, xscale="linear")
-    _isotherms(curves, out.with_name(out.stem + "_log" + out.suffix),
-               qe_unit, xscale="log")
-
-
-def _isotherms(curves: dict, out: Path, qe_unit: str | None, *, xscale: str):
-    if not curves:
-        return
-    items = list(curves.items())
-    unit = _unit(qe_unit, _common_unit(curves))
-    fig, axes = _grid(len(items), 6.9)
-    for ax, letter, ((mineral, bg), c) in zip(axes.ravel(), _letters(len(items)), items):
-        d, best = c["data"], c["best"]
-        x = np.asarray(d["Ce_ppm"], float)
-        y = np.asarray(d["qe"], float)
-
-        if xscale == "log":
-            xlo, xhi = float(np.nanmin(x)) * 0.55, float(np.nanmax(x)) * 1.45
-            grid = np.logspace(np.log10(xlo), np.log10(xhi), 360)
-        else:
-            xlo, xhi = 0.0, _nice_ceil(float(np.nanmax(x)) * 1.05)
-            grid = np.linspace(0.0, xhi, 400)
-
-        ok = _usable(best)
-        cmax = 0.0
-        for key in _draw_keys(c, ("langmuir", "freundlich"), allow_best=ok):
-            res = _find(c, key)
-            yy = np.asarray(ISOTHERM_MODELS[key].func(grid, _params(res)), float)
-            fin = yy[np.isfinite(yy)]
-            if fin.size:
-                cmax = max(cmax, float(fin.max()))
-            S.model_line(ax, grid, yy, key)
-
-        S.data_marker(ax, x, y, mineral, bg, yerr=_err(d.get("qe_sd")))
-        top = _headroom(float(np.nanmax(y)), cmax)
-        S.axis(ax, "C$_e$ (mg/L)", f"Q$_e$ ({unit})", xscale=xscale,
-               ylim=S.ylim_data(float(np.nanmin(y)), top))
-        if xscale == "log":
-            ax.set_xlim(xlo, xhi)
-        else:
-            ax.set_xlim(*S.xlim0(0.0, xhi))
-        _panel(ax, letter, mineral, bg)
-        # 最优模型参数触界时不再往图上写红字，只画可解释的参照线；
-        # 该组的具体情况写进报告正文的模型可靠性表。
-        S.legend(ax)
-    S.save(fig, out)
-
-
-# --------------------------------------------------------------------------
-# 动力学
+# 等温线 / 动力学：同一套面板绘制
 # --------------------------------------------------------------------------
 
 def _nice_ceil(v: float) -> float:
-    """把时间轴上限取整到好看的刻度（约 5–6 个主刻度，如 300 → 0/50/…/300）。"""
+    """把坐标上限取整到好看的刻度（约 5–6 个主刻度，如 300 → 0/50/…/300）。"""
     v = max(float(v), 1.0)
     for step in (5, 10, 20, 25, 50, 100, 200, 500):
         if v <= step * 6:
@@ -166,64 +108,82 @@ def _nice_ceil(v: float) -> float:
     return float(np.ceil(v / 1000.0) * 1000.0)
 
 
-def plot_kinetics(curves: dict, out: Path, qt_unit: str | None = None):
-    """动力学：默认线性时间轴，并另存一份对数轴版本。"""
-    _kinetics(curves, out, qt_unit, xscale="linear")
-    _kinetics(curves, out.with_name(out.stem + "_log" + out.suffix),
-              qt_unit, xscale="log")
+def _curves(curves: dict, out: Path, *, xcol: str, ycol: str, sdcol: str,
+            models: dict, refs: tuple[str, ...], xlabel: str, ylabel: str,
+            xscale: str, lin_pad: float, log_lo: float, log_hi: float,
+            grade_best: bool = False):
+    """等温线与动力学共用的一块面板：实测点 + 参照曲线 + 坐标轴 + 图例。
 
-
-def _kinetics(curves: dict, out: Path, qt_unit: str | None, *, xscale: str):
+    ``grade_best`` 为真时（等温线），最优模型参数触界/共线就不画它，只留
+    可解释的参照线；判定写进报告的模型可靠性表，图上不叠红字。
+    """
     if not curves:
         return
     items = list(curves.items())
-    unit = _unit(qt_unit, _common_unit(curves))
+    unit = _common_unit(curves)
     fig, axes = _grid(len(items), 6.9)
     for ax, letter, ((mineral, bg), c) in zip(axes.ravel(), _letters(len(items)), items):
         d, best = c["data"], c["best"]
-        x = np.asarray(d["time_h"], float)
-        y = np.asarray(d["qt"], float)
+        x = np.asarray(d[xcol], float)
+        y = np.asarray(d[ycol], float)
 
         if xscale == "log":
-            xlo, xhi = float(np.nanmin(x)) * 0.45, float(np.nanmax(x)) * 2.2
+            xlo, xhi = float(np.nanmin(x)) * log_lo, float(np.nanmax(x)) * log_hi
             grid = np.logspace(np.log10(xlo), np.log10(xhi), 360)
         else:
-            # 横轴：线性时间（0 → 取整上限），对齐参考版式
-            xlo, xhi = 0.0, _nice_ceil(float(np.nanmax(x)) * 1.03)
+            xlo, xhi = 0.0, _nice_ceil(float(np.nanmax(x)) * lin_pad)
             grid = np.linspace(0.0, xhi, 400)
 
+        ok = _usable(best)
         cmax = 0.0
-        for key in _draw_keys(c, ("pfo", "pso")):
+        for key in _draw_keys(c, refs, allow_best=ok if grade_best else True):
             res = _find(c, key)
-            yy = np.asarray(KINETIC_MODELS[key].func(grid, _params(res)), float)
+            yy = np.asarray(models[key].func(grid, _params(res)), float)
             fin = yy[np.isfinite(yy)]
             if fin.size:
                 cmax = max(cmax, float(fin.max()))
             S.model_line(ax, grid, yy, key)
 
-        S.data_marker(ax, x, y, mineral, bg, yerr=_err(d.get("qt_sd")))
+        S.data_marker(ax, x, y, mineral, bg, yerr=_err(d.get(sdcol)))
         top = _headroom(float(np.nanmax(y)), cmax)
-        S.axis(ax, "Time (h)", f"Q$_t$ ({unit})", xscale=xscale,
+        S.axis(ax, xlabel, ylabel.format(unit=unit), xscale=xscale,
                ylim=S.ylim_data(float(np.nanmin(y)), top))
         if xscale == "log":
             ax.set_xlim(xlo, xhi)
         else:
             ax.set_xlim(*S.xlim0(0.0, xhi))
         _panel(ax, letter, mineral, bg)
-        # R² 太低时图例不加 (best) 标记，说明写在图注里，图上不再叠红字。
         S.legend(ax)
     S.save(fig, out)
+
+
+def plot_isotherms(curves: dict, out: Path):
+    """等温线：默认线性 Ce 轴，并另存一份对数轴版本（``isotherm_log.*``）。"""
+    for scale, p in (("linear", out), ("log", out.with_name(out.stem + "_log" + out.suffix))):
+        _curves(curves, p, xcol="Ce_ppm", ycol="qe", sdcol="qe_sd",
+                models=ISOTHERM_MODELS, refs=("langmuir", "freundlich"),
+                xlabel="C$_e$ (mg/L)", ylabel="Q$_e$ ({unit})", xscale=scale,
+                lin_pad=1.05, log_lo=0.55, log_hi=1.45, grade_best=True)
+
+
+def plot_kinetics(curves: dict, out: Path):
+    """动力学：默认线性时间轴，并另存一份对数轴版本（``kinetics_log.*``）。"""
+    for scale, p in (("linear", out), ("log", out.with_name(out.stem + "_log" + out.suffix))):
+        _curves(curves, p, xcol="time_h", ycol="qt", sdcol="qt_sd",
+                models=KINETIC_MODELS, refs=("pfo", "pso"),
+                xlabel="Time (h)", ylabel="Q$_t$ ({unit})", xscale=scale,
+                lin_pad=1.03, log_lo=0.45, log_hi=2.2)
 
 
 # --------------------------------------------------------------------------
 # 颗粒内扩散
 # --------------------------------------------------------------------------
 
-def plot_ipd(curves: dict, out: Path, qt_unit: str | None = None):
+def plot_ipd(curves: dict, out: Path):
     if not curves:
         return
     items = list(curves.items())
-    unit = _unit(qt_unit, _common_unit(curves))
+    unit = _common_unit(curves)
     fig, axes = _grid(len(items), 6.6)
     for ax, letter, ((mineral, bg), c) in zip(axes.ravel(), _letters(len(items)), items):
         d = c["data"]
@@ -359,7 +319,7 @@ def plot_qc(qc, out: Path):
 # 残差
 # --------------------------------------------------------------------------
 
-def plot_residuals(curves_iso: dict, curves_kin: dict, out: Path, qe_unit: str | None = None):
+def plot_residuals(curves_iso: dict, curves_kin: dict, out: Path):
     fig, axes = S.new_grid(2, 2, width_cm=17.2, height_cm=8.2, bottom=0.245)
     panels = [(axes.ravel()[0], "a", curves_iso, "Isotherm", True),
               (axes.ravel()[1], "b", curves_kin, "Kinetics", False)]

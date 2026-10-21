@@ -15,7 +15,18 @@ from pathlib import Path
 import pandas as pd
 
 from .pipeline import BASE, load_config, resolve_solid, run
+from .io import read_all
 from .template import read_template, write_from_data, write_template
+
+
+def _load_source(a):
+    """按 ``--template`` / ``--data-dir`` 读取长表，返回 ``(data, 固液比)``。"""
+    if a.template:
+        data, cfg_t, _ = read_template(a.template)
+        return data, cfg_t.get("solids_g_per_L")
+    cfgf = load_config(Path(a.config))
+    data, _, _, _ = read_all(Path(a.data_dir or cfgf.get("data_dir") or "."), cfgf)
+    return data, resolve_solid(cfgf, None)
 
 
 def _cmd_run(a) -> int:
@@ -36,16 +47,9 @@ def _cmd_template(a) -> int:
 def _cmd_export(a) -> int:
     """把已解析的数据导出成填好的模板（样例 / 迁移用）。"""
     from . import names as N
-    from .io import read_all
 
     N.load(BASE / "names.json")
-    if a.template:
-        data, cfg_t, _ = read_template(a.template)
-        solids = cfg_t.get("solids_g_per_L")
-    else:
-        cfgf = load_config(Path(a.config))
-        data, _, _, _ = read_all(Path(a.data_dir or cfgf.get("data_dir") or "."), cfgf)
-        solids = resolve_solid(cfgf, None)
+    data, solids = _load_source(a)
     # 导出的模板与手填模板保持一致：mineral 列一律写英文显示名
     data = data.copy()
     data["mineral"] = data["mineral"].map(N.mineral)
@@ -58,8 +62,6 @@ def _cmd_export(a) -> int:
 
 def _cmd_matlab(a) -> int:
     """导出 MATLAB 脚本：默认给 Ce/qe 数组；--verify 给全模型复核脚本。"""
-    from .io import read_all
-
     if getattr(a, "verify", False):
         import pickle
 
@@ -83,13 +85,7 @@ def _cmd_matlab(a) -> int:
         print(f"已写入 {p}")
         return 0
 
-    if a.template:
-        data, cfg_t, _ = read_template(a.template)
-        solid = cfg_t.get("solids_g_per_L")
-    else:
-        cfgf = load_config(Path(a.config))
-        data, _, _, _ = read_all(Path(a.data_dir or cfgf.get("data_dir") or "."), cfgf)
-        solid = resolve_solid(cfgf, None)
+    data, solid = _load_source(a)
 
     from . import analyze
     iso = analyze.isotherm_data(data, solid)

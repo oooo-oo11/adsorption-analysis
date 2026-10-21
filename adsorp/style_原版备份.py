@@ -1,8 +1,7 @@
-"""[原版备份] 2026-10-19 修改前的完整 style.py，仅供回退，勿 import。
-
-回退方法：把本文件重命名为 style.py 覆盖 adsorp/style.py 即可。
-本次修改点：panel_label 的标题与条件文字加白色描边晕，避免被数据点压住。
-"""
+# [原版备份] 2026-10-19 修改前的完整 style.py，仅供回退，勿 import。
+#
+# 回退方法：把本文件重命名为 style.py 覆盖 adsorp/style.py 即可。
+# 本次修改点：panel_label 的标题与条件文字加白色描边晕，避免被数据点压住。
 """统一绘图风格：对齐 fig2-261008.m（MATLAB）。
 
 要点：17.2 cm 版心、Times New Roman、四边黑色细框、刻度朝内、无网格、

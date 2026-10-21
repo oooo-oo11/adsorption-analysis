@@ -151,7 +151,7 @@ def apply():
     #      比正文粗一号而且字形不同。这里改成 custom + 显式指定 Times New Roman，
     #      让 $...$ 里的字母、数字、希腊字母也全部是新罗马。
     #      代价是 mathtext 不再带 CJK 字形，所以含中文的字符串仍然禁止出现 $...$
-    #      （见 chem / panel_label 里的兜底）。
+    #      （见 panel_label 里的兜底）。
     plt.rcParams.update({
         "font.family": ["Times New Roman", "SimSun", "DejaVu Serif"],
         "font.serif": ["Times New Roman", "SimSun", "DejaVu Serif"],
@@ -394,20 +394,6 @@ def save(fig, path):
     fig.savefig(path, bbox_inches="tight", pad_inches=0.035)
     fig.savefig(path.with_suffix(".pdf"), bbox_inches="tight", pad_inches=0.035)
     plt.close(fig)
-
-
-def chem(s: str) -> str:
-    """化学式/矿物名的显示文本。
-
-    刻意保持纯 Unicode（如 ``δ-MnO₂``）而不转成 ``$\\delta$-MnO$_2$``：
-    mathtext 只走 STIX 字体集，一旦整串被 ``$...$`` 接管，其中的中文矿物名
-    就会因为缺字形被替换成方框。Unicode 下标则能由字体回退链正常渲染
-    （Times New Roman 本身含 ₂₃₄）。若传入的是 mathtext 形式，这里反向
-    还原成 Unicode，避免调用处两种写法混用。
-    """
-    s = str(s)
-    s = s.replace("$_2$", "₂").replace("$_3$", "₃").replace("$_4$", "₄")
-    return s
 
 
 def has_cjk(s: str) -> bool:
