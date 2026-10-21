@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import logging
+import zlib
 
 import matplotlib
 matplotlib.use("Agg")
@@ -30,31 +31,57 @@ SAGE = (0.55, 0.71, 0.55)
 SAND = (0.85, 0.68, 0.42)
 SLATE = (0.47, 0.55, 0.75)
 
-# 键一律用**图上显示的英文名**（与模板里的 mineral 列一致）；中文旧表由
-# ``mineral_color`` 经 names 映射兜底，所以两种写法都能取到颜色。
-MINERAL_COLOR = {
-    "Feroxyhyte": SKY,
-    "δ-MnO₂": MAUVE,
-    "Rancieite": SAGE,
-    "Acid birnessite": SAND,
-    "Alkaline birnessite": SLATE,
-}
+# 吸附剂配色与背景形状：不预设任何具体体系，按本次数据里出现的名称排序后
+# 依次分配，保证同一份数据每次出图的颜色/形状一致；出现顺序变化（例如只跑
+# 一部分数据）时也不会串色，因为分配是全局登记的，不是按图各排各的。
+#
+# 顺序是有讲究的：吸附剂首位用墨黑——单体系数据（最常见）出图就是黑点，
+# 与论文里黑白可印刷的惯例一致；多体系时才依次取彩色，避免撞色。
+MINERAL_PALETTE = [INK, MAUVE, SAGE, SAND, SLATE, SKY, TEAL,
+                   (0.85, 0.42, 0.42), (0.60, 0.45, 0.72)]
+# 背景电解质沿用原配色顺序：浅蓝 → 紫红 → 沙黄 → 灰绿 → 蓝灰 → 墨绿
+BG_PALETTE = [SKY, MAUVE, SAND, SAGE, SLATE, TEAL,
+              (0.85, 0.42, 0.42), (0.60, 0.45, 0.72)]
+# 形状首位是三角形，其次圆、方：三个背景时依次 ^ / o / s，与旧图一致
+MARKERS = ["^", "o", "s", "D", "v", "P", "X", "*"]
 
-BG_COLOR = {
-    "0.001 M NaNO₃": SKY,
-    "0.01 M NaNO₃": MAUVE,
-    "0.1 M NaNO₃": SAGE,
-    "ASW": SAND,
-}
+_MINERAL_ORDER: dict[str, int] = {}
+_BG_ORDER: dict[str, int] = {}
 
-BG_MARKER = {"0.001 M NaNO₃": "^", "0.01 M NaNO₃": "o",
-             "0.1 M NaNO₃": "D", "ASW": "s"}
+
+def register_categories(minerals=None, backgrounds=None) -> None:
+    """登记本次数据里的吸附剂与背景，供配色/形状按固定顺序分配。"""
+    ms = [] if minerals is None else list(minerals)
+    bs = [] if backgrounds is None else list(backgrounds)
+    for m in sorted({N.mineral(str(x)) for x in ms if str(x).strip()}):
+        _MINERAL_ORDER.setdefault(m, len(_MINERAL_ORDER))
+    for b in sorted({str(x).strip() for x in bs if str(x).strip()}):
+        _BG_ORDER.setdefault(b, len(_BG_ORDER))
+
+
+def _pick(table: dict[str, int], key: str, salt: str, n: int) -> int:
+    """已登记的名称按登记序号取，未登记的按名称哈希兜底（跨进程稳定）。"""
+    if key in table:
+        return table[key] % n
+    return zlib.crc32((salt + key).encode("utf-8")) % n
 
 
 def mineral_color(name: str):
-    """矿物配色：先按显示名查，再经 names 映射查（兼容中文数据表）。"""
-    key = N.mineral(name)
-    return MINERAL_COLOR.get(key, MINERAL_COLOR.get(str(name), INK))
+    """吸附剂配色：经 names 映射后按登记顺序取色。"""
+    key = N.mineral(str(name))
+    return MINERAL_PALETTE[_pick(_MINERAL_ORDER, key, "m:", len(MINERAL_PALETTE))]
+
+
+def bg_color(background: str):
+    """背景电解质配色（同一背景在图上与标记同色系）。"""
+    key = str(background)
+    return BG_PALETTE[_pick(_BG_ORDER, key, "b:", len(BG_PALETTE))]
+
+
+def bg_marker(background: str) -> str:
+    """背景电解质形状：不同强度/组成用不同标记区分。"""
+    key = str(background)
+    return MARKERS[_pick(_BG_ORDER, key, "b:", len(MARKERS))]
 
 MODEL_COLOR = {
     "pfo": PURPLE, "langmuir": PURPLE,
@@ -198,9 +225,9 @@ def new_grid(n_panels: int, ncols: int = 2, width_cm: float = 17.2,
 
 
 def panel_label(ax, letter: str, name: str = "", cond: str = "", y: float = 0.975):
-    """左上角面板标号：(a) 矿物名 + 次行实验条件。
+    """左上角面板标号：(a) 吸附剂名 + 次行实验条件。
 
-    条件单独占一行，避免 "(a) 钙锰矿 | 0.01 M NaNO₃" 这种长标题横跨大半个
+    条件单独占一行，避免 "(a) Mineral A | 0.01 M NaCl" 这种长标题横跨大半个
     面板、把右上角的图例位置挤掉。
 
     两行间距用 ``TITLE_GAP``（轴高比例）控制：11.2 pt 的标题行高约
@@ -272,7 +299,7 @@ def axis(ax, xlabel: str, ylabel: str, *, xscale: str = "linear",
 def data_marker(ax, x, y, mineral: str, background: str, *, yerr=None,
                 label: str | None = None, zorder: int = 5):
     color = mineral_color(mineral)
-    marker = BG_MARKER.get(background, "o")
+    marker = bg_marker(background)
     if yerr is not None:
         yerr = list(yerr)
         ax.errorbar(x, y, yerr=yerr, fmt="none", ecolor=GRAY,

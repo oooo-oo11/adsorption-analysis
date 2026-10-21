@@ -1,4 +1,0 @@
-﻿mineral,pair,overlap_pH,max_delta_theta_pct,mean_delta_theta_pct,direction,hint
-Todorokite,0.001 M NaNO₃ vs 0.01 M NaNO₃,4–10,19.41500203860548,11.643637268713208,曲线交叉/方向不一致,曲线交叉 → 机理随 pH 改变，不能以单一 pH50 排序；建议逐 pH 比较并核查批次
-Todorokite,0.001 M NaNO₃ vs ASW,4–10,39.105800687100924,15.957823529048362,曲线交叉/方向不一致,曲线交叉 → 机理随 pH 改变，不能以单一 pH50 排序；建议逐 pH 比较并核查批次
-Todorokite,0.01 M NaNO₃ vs ASW,4–10,27.862245134354737,18.48018535409448,ASW 更低,差异显著 → 该离子强度下吸附整体更弱，符合静电/离子交换竞争，需光谱或表面络合模型佐证

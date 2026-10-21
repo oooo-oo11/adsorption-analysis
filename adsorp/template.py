@@ -3,9 +3,9 @@
 设计原则
 --------
 * **一张宽表**（``Data``）而不是多张关联表：实验员只需要往下贴行，
-  不涉及跨表查找；分组的全部信息（矿物、背景、C0、固液比）随行携带。
+  不涉及跨表查找；分组的全部信息（吸附剂、背景、C0、固液比）随行携带。
 * 列名保持英文，便于脚本与 R/Python 互通；填写说明另放 ``README`` 表。
-* ``Settings`` 表存全局默认值与"矿物 → 固液比"映射，避免逐行重复填写。
+* ``Settings`` 表存全局默认值与"吸附剂 → 固液比"映射，避免逐行重复填写。
 
 必填最小集：``exp, mineral, background`` + 实测值（``Ce_ppm`` 或 ``conc_ppb``）
 + ``time_h``（动力学）/ ``pH``（吸附边）。``C0_ppm`` 在等温线中逐行必填；
@@ -14,10 +14,12 @@
 """
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
+from openpyxl import load_workbook
 
 # 模板的显示字体：西文/数字 Times New Roman，中文 宋体，与出图字体一致，
 # 填表时看到的数字形态就是图上的数字形态。字体只影响显示，脚本读的是值。
@@ -70,8 +72,8 @@ DATA_COLUMNS = [
     ("exp", "isotherm | kinetics | edge | qc",
      "实验类型，四选一；qc 行用于检查标准（标称值填 C0_ppm、测定值填 conc_ppb）。"
      "同一实验块可只写首行，下面留空表示沿用上一行"),
-    ("mineral", "δ-MnO₂ / Rancieite / …", "矿物名，用英文（图上直接显示这个名字）；留空沿用上一行"),
-    ("background", "0.01 M NaNO₃ / ASW", "背景电解质；留空沿用上一行"),
+    ("mineral", "Mineral A / Mineral B", "吸附剂名，用英文（图上直接显示这个名字）；留空沿用上一行"),
+    ("background", "0.01 M NaCl / 0.1 M NaCl", "背景电解质；留空沿用上一行"),
     ("ionic_strength_M", "0.01", "离子强度 (mol/L)，留空则从 background 解析"),
     ("C0_ppm", "6", "初始浓度 (mg/L)；等温线必填，动力学/吸附边留空取默认"),
     ("time_h", "24", "取样时间 (h)，仅 kinetics 必填；留空行会跳过"),
@@ -80,9 +82,9 @@ DATA_COLUMNS = [
     ("conc_ppb", "127.5", "标线计算/ppb（不是荧光值）。无 Ce_ppm 时按下方公式换算"),
     ("corr_factor", "1.0", "校正因子（标线/漂移校正）"),
     ("dilution", "600", "稀释倍数，留空取 Settings 默认值"),
-    ("solid_g_per_L", "3.0", "固液比 m/V。留空取 Settings 中该矿物的值"),
+    ("solid_g_per_L", "3.0", "固液比 m/V。留空取 Settings 中该吸附剂的值"),
     ("replicate", "1", "平行样编号，可留空"),
-    ("note", "异常，未加原液", "备注；含 异常/存疑/加错/未取样/可疑/重测 的行自动剔除"),
+    ("note", "并行样 2", "备注；含 异常/存疑/加错/未取样/可疑/重测 的行只提示，不自动剔除"),
     ("exclude", "FALSE", "唯一能剔除数据的开关：填 TRUE 则该行不参与拟合与绘图"),
 ]
 
@@ -90,22 +92,17 @@ SETTINGS_ROWS = [
     ("project", "Adsorption dataset"),
     ("analyst", ""),
     ("analyte", ""),
-    # D-R 的吸附势 ε=RT·ln(1+1/C_mol) 要用到这两个值：换吸附质或温度必须改，
-    # 否则 K_DR 与 E 会整体平移。默认 121.76 g/mol 对应 Sb。
-    ("molar_mass_g_per_mol", 121.76),
+    # D-R 的吸附势 ε=RT·ln(1+1/C_mol) 要用到吸附质摩尔质量与温度；不填则跳过
+    # D-R 模型（其余 6 个等温线模型照常拟合），报告里会写明原因。
+    ("molar_mass_g_per_mol", ""),
     ("temperature_K", 298.15),
-    ("default_C0_kinetics", 6.0),
-    ("default_C0_edge", 6.0),
-    ("default_dilution_kinetics", 600),
-    ("default_dilution_edge", 600),
-    ("default_dilution_isotherm", 600),
+    ("default_C0_kinetics", ""),
+    ("default_C0_edge", ""),
+    ("default_dilution_kinetics", ""),
+    ("default_dilution_edge", ""),
+    ("default_dilution_isotherm", ""),
     ("figure_language", "en"),
-    ("note", "solid:<矿物> 行为固液比 m/V (g/L)，矿物名与 Data 表一致；未列的矿物按 mg/L(悬浮液) 处理"),
-    ("solid:δ-MnO₂", 1.0),
-    ("solid:Rancieite", 1.0),
-    ("solid:Acid birnessite", 3.0),
-    ("solid:Alkaline birnessite", 3.0),
-    ("solid:Feroxyhyte", 0.5),
+    ("note", "solid:<吸附剂> 行为固液比 m/V (g/L)，名称与 Data 表一致；未列的按 mg/L(悬浮液) 处理"),
 ]
 
 README_LINES = [
@@ -115,18 +112,18 @@ README_LINES = [
     ("1. 在 Data 表按行填入实测数据，一行 = 一个样品的一次测定；三组平行就写三行，replicate 分别填 1/2/3。", ""),
     ("2. 同一实验块可以只在第一行写 exp/mineral/background，下面留空表示沿用上一行，不必逐行复制。", ""),
     ("3. 等温线的 C0_ppm 逐行必填；动力学/吸附边可留空，按同组已有值或 Settings 的 default_C0_kinetics/edge 补齐。", ""),
-    ("4. mineral 列直接填「英文名」（如 Rancieite、Acid birnessite）：图上就用这个名字，不再经脚本翻译。"
-     "以后新增矿物，照这个写法填即可，不必改 names.json。", ""),
-    ("5. Settings 表填全局默认值，并在 solids 区列出每个矿物的固液比 m/V (g/L)，键名与 mineral 列一致。", ""),
+    ("4. mineral 列直接填「英文名」（如 Mineral A、Goethite）：图上就用这个名字，不再经脚本翻译。"
+     "以后新增吸附剂，照这个写法填即可，不必改 names.json。", ""),
+    ("5. Settings 表填全局默认值；固液比 m/V (g/L) 可写在 Settings 的 solid:<名称> 行，也可逐行填在 Data 表。", ""),
     ("6. 保存后执行：adsorp.bat run --template templates/吸附数据模板.xlsx --out output（在项目目录下；等价于 python -m adsorp.cli run）", ""),
     ("7. 结果：output/报告.html（单文件自包含，图表与 PDF 均内嵌，可单独转发）、结果汇总.xlsx、figures/（PNG+PDF）、tables/（CSV）。", ""),
-    ("8. 背景电解质写 NaNO3 或 NaNO₃ 都可以，脚本会统一成 NaNO₃ 再分组。", ""),
+    ("8. 背景电解质按字符串分组，写法要保持一致（如统一写 0.01 M NaCl）；全角/半角、上标下标的差异会被当成两组。", ""),
     ("9. 表内字体：西文/数字 Times New Roman、中文宋体。字体只影响显示——脚本按单元格的值读取，"
      "改字体、改字号、加粗都不会影响任何计算。", ""),
     ("10. 检查标准（QC）行单独写 exp=qc：标称 ppb 填 C0_ppm、测定 ppb 填 conc_ppb，"
      "mineral/background 可留空；脚本据此算回收率并出 QC 图。", ""),
     ("11. Settings 的 molar_mass_g_per_mol / temperature_K 只用于 D-R 模型的吸附势换算；"
-     "换吸附质或换温度必须改这两个值，否则 K_DR 与 E 会整体偏移。", ""),
+     "不填摩尔质量则跳过 D-R（其余等温线模型不受影响），换温度请同步改 temperature_K。", ""),
     ("", ""),
     ("浓度换算", "h2"),
     ("conc_ppb 填“标线计算/ppb”，不要填实测荧光值；若填 Ce_ppm，直接使用。", ""),
@@ -165,10 +162,11 @@ def write_template(path: str | Path) -> Path:
 
     example = [
         # exp, mineral, background, ionic, C0, time, pH, Ce, conc, corr, dil, solid, rep, note, excl
-        ["isotherm", "δ-MnO₂", "0.01 M NaNO₃", 0.01, 50, None, None, 21.96, None, 1.0, 600, 1.0, 1, "", False],
-        ["isotherm", "δ-MnO₂", "0.01 M NaNO₃", 0.01, 50, None, None, 22.10, None, 1.0, 600, 1.0, 2, "", False],
-        ["kinetics", "Rancieite", "0.01 M NaNO₃", 0.01, 6, 24, None, None, 1.70, 1.0, 598.8889, 1.0, 1, "", False],
-        ["edge", "Acid birnessite", "0.01 M NaNO₃", 0.01, 6, None, 5.0, 0.62, None, 1.0, 600, 3.0, 1, "", False],
+        ["isotherm", "Mineral A", "0.01 M NaCl", 0.01, 10, None, None, 7.82, None, 1.0, 1, 2.0, 1, "", False],
+        ["isotherm", "Mineral A", "0.01 M NaCl", 0.01, 10, None, None, 7.65, None, 1.0, 1, 2.0, 2, "", False],
+        ["isotherm", "Mineral B", "0.01 M NaCl", 0.01, 10, None, None, 5.10, None, 1.0, 1, 2.0, 1, "", False],
+        ["kinetics", "Mineral A", "0.01 M NaCl", 0.01, 10, 24, None, None, 102.4, 1.0, 50, 2.0, 1, "", False],
+        ["edge", "Mineral A", "0.01 M NaCl", 0.01, 10, None, 5.0, 1.25, None, 1.0, 1, 2.0, 1, "", False],
     ]
     data = pd.DataFrame(example, columns=[c[0] for c in DATA_COLUMNS])
 
@@ -266,6 +264,53 @@ def _to_bool(v) -> bool:
     return s in {"true", "1", "yes", "y", "是", "剔除"}
 
 
+def _normalize_background(text: str) -> str:
+    """统一背景电解质的写法：``0.01 M CaCl2`` 与 ``0.01 M CaCl₂`` 视为同一组。
+
+    只把 ``x M 盐`` 里的数字转成下标（CaCl2 → CaCl₂、Na2SO4 → Na₂SO₄），
+    不碰前面的浓度数字，也不改 ASW 这类没有化学式的写法。
+    两条写法若被当成两组，同一批数据会被静默拆开，pH 边尤其明显。
+    """
+    s = str(text).strip()
+    m = re.match(r"^(?P<head>.*?\bM\s+)(?P<formula>[A-Za-z][A-Za-z0-9]*)$", s, re.I)
+    if not m:
+        return s
+    formula = m.group("formula").translate(str.maketrans("0123456789", "₀₁₂₃₄₅₆₇₈₉"))
+    return m.group("head") + formula
+
+
+def is_template_workbook(path: str | Path) -> bool:
+    """判断一个 xlsx 是否是本工具的数据模板（有 Data 表，表头含 exp）。
+
+    只读打开，几毫秒；损坏、加密或不是 xlsx 的文件返回 False，不抛异常。
+    """
+    wb = None
+    try:
+        wb = load_workbook(path, read_only=True, data_only=True)
+        if "Data" not in wb.sheetnames:
+            return False
+        ws = wb["Data"]
+        header = next(ws.iter_rows(min_row=1, max_row=1, values_only=True), ())
+        cols = {str(c).strip().lower() for c in header if c is not None}
+        return "exp" in cols and bool(cols & {"mineral", "ce_ppm", "conc_ppb"})
+    except Exception:
+        return False
+    finally:
+        if wb is not None:
+            try:
+                wb.close()
+            except Exception:
+                pass
+
+
+def split_workbooks(paths) -> tuple[list[Path], list[Path]]:
+    """把一批 Excel 分成 (模板, 仪器原始工作簿) 两组，保持原有顺序。"""
+    tpls, raws = [], []
+    for p in map(Path, paths):
+        (tpls if is_template_workbook(p) else raws).append(p)
+    return tpls, raws
+
+
 def read_template(path: str | Path,
                   defaults: dict | None = None) -> tuple[pd.DataFrame, dict, list[str]]:
     """读取填写后的模板，返回 (长表 data, 配置 dict, 警告列表)。
@@ -304,7 +349,7 @@ def read_template(path: str | Path,
             settings = {str(k).strip(): v for k, v in
                         zip(st["key"], st["value"]) if pd.notna(k)}
 
-    # Settings 里 solids 区：continuation rows 的 key 形如 "solid:矿物"
+    # Settings 里 solids 区：continuation rows 的 key 形如 "solid:吸附剂"
     solids = {}
     for k, v in settings.items():
         if str(k).lower().startswith("solid"):
@@ -331,8 +376,7 @@ def read_template(path: str | Path,
     out["mineral"] = (raw.get("mineral", pd.Series("", index=raw.index))
                       .fillna("").astype(str).str.strip())
     out["background"] = (raw.get("background", pd.Series("", index=raw.index))
-                         .fillna("").astype(str).str.strip()
-                         .str.replace(r"NaNO3\b", "NaNO₃", regex=True))
+                         .fillna("").astype(str).str.strip().map(_normalize_background))
 
     # 组名向下沿用：适配"一个实验块只写一次 exp/mineral/background"的贴法
     autofill = {}
@@ -351,8 +395,8 @@ def read_template(path: str | Path,
 
     out["group"] = out["exp"] + "-" + out["mineral"] + "-" + out["background"]
     ionic = num("ionic_strength_M")
-    # 留空时从 background 解析（"0.01 M NaNO₃" → 0.01；ASW 无法解析，保持空）
-    parsed = (out["background"].str.extract(r"(\d+(?:\.\d+)?)\s*M\s*NaNO", expand=False)
+    # 留空时从 background 解析（"0.01 M NaCl" → 0.01；ASW 等无 M 的写法保持空）
+    parsed = (out["background"].str.extract(r"(\d+(?:\.\d+)?)\s*M\b", expand=False)
               .astype(float))
     out["ionic_strength_M"] = ionic.where(ionic.notna(), parsed)
     out["C0_ppm"] = num("C0_ppm")

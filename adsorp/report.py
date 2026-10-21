@@ -261,8 +261,8 @@ def _table(df: pd.DataFrame, cols: list[str] | None = None,
             cols = [rename.get(c, c) for c in cols]
     if cols:
         d = d[[c for c in cols if c in d.columns]]
-    # 矿物名统一按 names.json 显示（中文数据 → 英文名），与图件保持一致
-    for col in ("mineral", "矿物"):
+    # 吸附剂名统一按 names.json 显示（中文数据 → 英文名），与图件保持一致
+    for col in ("mineral", "矿物", "吸附剂"):
         if col in d.columns:
             d[col] = d[col].map(lambda v: names.mineral(str(v)) if pd.notna(v) else v)
     allow = set(allow_html)
@@ -426,7 +426,7 @@ def _audit_summary(audit: pd.DataFrame) -> pd.DataFrame:
             verdict = f"最优 {best['model_label']} 明显优于其余（ΔAICc≥{second:.1f}）"
         rows.append({
             "实验": {"isotherm": "等温线", "kinetics": "动力学"}.get(kind, kind),
-            "矿物": mineral, "背景": bg,
+            "吸附剂": mineral, "背景": bg,
             "最优模型": best["model_label"], "R²": best["R2"], "AICc": best["AICc"],
             "次位 ΔAICc": second,
             "最优参数可用": "否" if best_bad else "是",
@@ -507,7 +507,7 @@ def _all_param_rows(fits: pd.DataFrame, exp: str) -> pd.DataFrame:
         if pd.notna(hit) and np.isfinite(hit) and hit < 0.5:
             flags.append("多解")
         rows.append({
-            "矿物": r["mineral"], "背景": r["background"],
+            "吸附剂": r["mineral"], "背景": r["background"],
             "模型": r.get("model_label", r["model"]),
             "参数": _param_text(r, model),
             "R²": _fmt(r.get("R2")), "adj-R²": _fmt(r.get("adj_R2")),
@@ -525,10 +525,10 @@ def _model_legend_table() -> pd.DataFrame:
     这里是**模型级**说明，容量单位保留"mg/g 或 mg/L"二选一的写法；
     参数表（``_param_text``）才按组渲染成确定的单位。
     """
-    from .models import ISOTHERM_MODELS, KINETIC_MODELS
+    from .models import KINETIC_MODELS, active_isotherms
 
     rows = []
-    for kind, lib in (("等温线", ISOTHERM_MODELS), ("动力学", KINETIC_MODELS)):
+    for kind, lib in (("等温线", active_isotherms()), ("动力学", KINETIC_MODELS)):
         for m in lib.values():
             unit = "；".join(
                 f"{n} ({u.format(q='mg/g 或 mg/L(悬浮液)') if '{q}' in u else u})"
@@ -550,23 +550,15 @@ def write_html(out: Path, data, qc, iso_best, iso_fits, kin_best, kin_fits, ipd,
         (n_valid, "有效数据点"),
         (len(iso_best) if not iso_best.empty else 0, "等温线样品组"),
         (len(kin_best) if not kin_best.empty else 0, "动力学样品组"),
-        (edge_params["mineral"].nunique() if not edge_params.empty else 0, "吸附边矿物"),
+        (edge_params["mineral"].nunique() if not edge_params.empty else 0, "吸附边组数"),
         (n_issue, "待核查点"),
     ]
     kpi_html = "".join(f'<div class="kpi"><b>{v}</b><span>{k}</span></div>' for v, k in kpis)
 
-    # 组级提示必须进报告：过去它们只打印在控制台，而报告才是交付物——
-    # "ASW 这组动力学 R² 最高仅 0.03、不宜报告 qe/k" 这类结论在 HTML 里
-    # 根本搜不到，等于最关键的一条判断从交付物里消失了。
-    warn_list = [str(w).strip() for w in (warns or []) if str(w).strip()]
+    # 组级提示只打印在控制台与 run.log，不进报告正文：报告是给读者看的成品，
+    # 逐条罗列"某组 R² 偏低""曲线交叉"会让正文变成调试日志。
+    # 逐点可疑值仍在下面的「数据质量清单」里列出（那是数据本身的问题）。
     warns_html = ""
-    if warn_list:
-        items = "".join(f"<li>{_html.escape(w)}</li>" for w in warn_list)
-        warns_html = (
-            f'<details open><summary>分析提示（{len(warn_list)} 条）</summary>'
-            '<div class="warn"><p style="margin:0 0 6px">以下为脚本对数据可行性与拟合质量的'
-            "自动判断，<b>不改变任何实测值</b>；逐点可疑值另见下方的数据质量清单。</p>"
-            f"<ul>{items}</ul></div></details>")
 
     issues_html = ""
     if issues is not None and not issues.empty:
@@ -578,12 +570,12 @@ def write_html(out: Path, data, qc, iso_best, iso_fits, kin_best, kin_fits, ipd,
             "否则该点保持参与。</p>"
             '<div class="scroll">'
             + _table(issues, rename={
-                "exp": "实验", "mineral": "矿物", "background": "背景",
+                "exp": "实验", "mineral": "吸附剂", "background": "背景",
                 "row": "Excel 行", "condition": "条件", "Ce_ppm": "Ce / mg·L⁻¹",
                 "removal_pct": "吸附率 / %", "issue": "问题", "suggestion": "建议"})
             + "</div>")
 
-    # 固液比说明只写本次数据中实际出现的矿物：
+    # 固液比说明只写本次数据中实际出现的吸附剂：
     # config.json 里其他体系的默认值一概不列，避免读起来像"这些数据也用了"；
     # 数据里有样品却查不到固液比的，明确说明其 qe 仍以 mg/L(悬浮液) 计。
     present_minerals: list[str] = []
@@ -605,16 +597,16 @@ def write_html(out: Path, data, qc, iso_best, iso_fits, kin_best, kin_fits, ipd,
     pairs = "、".join(f"{m} {v:g} g/L" for m, v in have)
     miss_txt = "、".join(missing)
     if have and not missing:
-        solid_line = (f"固液比 m/V 按矿物分别取值：{pairs}。qe = (C0−Ce)/(m/V)，单位为 mg/g。")
+        solid_line = (f"固液比 m/V 按吸附剂分别取值：{pairs}。qe = (C0−Ce)/(m/V)，单位为 mg/g。")
         has_solid = True
     elif have:
         solid_line = (f"固液比 m/V：{pairs}；{miss_txt} 未提供固液比，"
                       "其吸附量以 (C0−Ce) 计，单位为 mg/L(悬浮液)。")
         has_solid = False
     else:
-        solid_line = (f"未提供固液比 m/V（{miss_txt or '数据中出现的矿物'}）："
+        solid_line = (f"未提供固液比 m/V（{miss_txt or '数据中出现的吸附剂'}）："
                       "qe 记为 (C0−Ce)，单位为 mg/L(悬浮液)。"
-                      "在 config.json 的 solids_g_per_L 或模板 Settings 的 solid:矿物 行补入后重跑，"
+                      "在 config.json 的 solids_g_per_L 或模板 Settings 的 solid:<吸附剂> 行补入后重跑，"
                       "即可换算为 mg/g。")
         has_solid = False
     qe_note = ("纵轴为 mg/g" if has_solid
@@ -641,7 +633,7 @@ def write_html(out: Path, data, qc, iso_best, iso_fits, kin_best, kin_fits, ipd,
                     f'无法计算回收率，已从下表略去。</div>' if n_drop else '')
 
     ov = data.copy()
-    # 样品组名用英文矿物名，和图上保持一致（模板已改为直接填英文）
+    # 样品组名用英文吸附剂名，和图上保持一致（模板已改为直接填英文）
     if "mineral" in ov:
         ov["group"] = (ov["exp"].astype(str) + "-" + ov["mineral"].map(names.mineral)
                        + "-" + ov["background"].astype(str))
@@ -674,10 +666,10 @@ def write_html(out: Path, data, qc, iso_best, iso_fits, kin_best, kin_fits, ipd,
             + _table(summ))
 
         # MATLAB 全模型复核：所有模型都要独立验证，脚本随 run 生成
-        from .models import ISOTHERM_MODELS, KINETIC_MODELS
+        from .models import KINETIC_MODELS, active_isotherms
         mfile = out / "matlab_verify.m"
         if mfile.exists():
-            n_iso_models = len(ISOTHERM_MODELS)
+            n_iso_models = len(active_isotherms())
             n_kin_models = len(KINETIC_MODELS)
             n_iso_grp = len(curves_iso) if curves_iso else 0
             n_kin_grp = len(curves_kin) if curves_kin else 0
@@ -737,7 +729,7 @@ def write_html(out: Path, data, qc, iso_best, iso_fits, kin_best, kin_fits, ipd,
 <table class="figlist">{"".join(rows)}</table>
 <p style="margin-top:12px">{zip_link}</p>
 <div class="note">图件为纯英文，可直接用于英文稿件；版式 17.2 cm 双栏、Times New Roman、四边细框、刻度朝内。
-生成代码见 <code>adsorp/viz.py</code>（绘图）与 <code>adsorp/style.py</code>（样式）；矿物英文名可在
+生成代码见 <code>adsorp/viz.py</code>（绘图）与 <code>adsorp/style.py</code>（样式）；吸附剂英文名可在
 <code>names.json</code> 中修改，改完重跑即可。数值表另存为 <code>结果汇总.xlsx</code> 与
 <code>tables/*.csv</code>，看图与下载图件都不依赖它们。</div>"""
 
@@ -790,7 +782,7 @@ Elovich 的 α/β 与 Bangham 的 k<sub>B</sub> 同样随容量标度改变—�
 {_table(_all_param_rows(kin_fits, "kinetics"), allow_html=("参数",))}
 <h3>颗粒内扩散参数</h3>
 {_table(ipd, ["mineral", "background", "break_t_h", "k_id1", "C1", "k_id2", "C2"],
-        rename={"mineral": "矿物", "background": "背景", "break_t_h": "断点 t/h",
+        rename={"mineral": "吸附剂", "background": "背景", "break_t_h": "断点 t/h",
                 "k_id1": "k_id1", "C1": "C1", "k_id2": "k_id2", "C2": "C2"})}
 <details><summary>展开：原始动力学拟合表（含 95% 置信区间与全部误差函数）</summary>
 <div class="scroll">{_table(kin_fits)}</div></details>
@@ -811,7 +803,7 @@ d(log Ce)/dpH 一项，而吸附边实验中 Ce 随 pH 变化显著，两组实�
          "pH50", "pH50_SE", "edge_width", "slope_at_pH50",
          "plateau_high", "plateau_low", "R2_logistic",
          "logKd_slope", "logKd_R2", "logKd_n", "n_outlier", "outlier_pH", "reliable"],
-        rename={"mineral": "矿物", "background": "背景", "n_points": "点数",
+        rename={"mineral": "吸附剂", "background": "背景", "n_points": "点数",
                 "pH_range": "pH 范围", "edge_direction": "方向",
                 "pH50": "pH50", "pH50_SE": "pH50 SE",
                 "edge_width": "边宽", "slope_at_pH50": "pH50 处斜率",
@@ -823,7 +815,7 @@ d(log Ce)/dpH 一项，而吸附边实验中 Ce 随 pH 变化显著，两组实�
 <h3>离子强度效应</h3>
 <p>只给事实性差值：最大/平均 |Δθ| 与方向。曲线交叉也可能只是批次波动，
 因此不再自动生成"内圈络合/静电竞争"这类机理解读。</p>
-{_table(edge_cmp, rename={"mineral": "矿物", "pair": "对比组", "overlap_pH": "pH 重叠区",
+{_table(edge_cmp, rename={"mineral": "吸附剂", "pair": "对比组", "overlap_pH": "pH 重叠区",
                           "max_delta_theta_pct": "最大差值/百分点",
                           "mean_delta_theta_pct": "平均差值/百分点",
                           "direction": "方向"})}

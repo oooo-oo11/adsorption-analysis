@@ -2,8 +2,11 @@
 
 每个工作簿的 "AFS数据" 表结构为：
     若干标线块（标准编号/浓度/荧光值 + 斜率/截距/R²）
-    [可选] 全局参数（初始 Sb/ppm、总稀释倍数）
+    [可选] 全局参数（初始浓度/ppm、总稀释倍数）
     样品数据块：一行表头 + 若干样品行，中间穿插 "x ppb 检查标准"
+
+样品名约定为 ``吸附剂-背景``，例如 ``Goethite-0.01 M NaCl``、``Goethite-ASW``；
+不合约定的行会被记入"未识别组名"警告，而不是静默丢弃。
 """
 from __future__ import annotations
 
@@ -34,40 +37,40 @@ HEADER_ALIASES = {
     "type": ["类型"],
 }
 
-MINERAL_DISPLAY = {
-    "δ-MnO2": "δ-MnO₂",
-    "六方纤铁矿": "六方纤铁矿",
-}
+# 样品名里的元素序号（MnO2 → MnO₂）只是显示细节，不参与分组。
+# 背景电解质里"盐"的种类默认不限制：``0.01 M NaCl`` / ``0.1 M KNO3`` 都能识别。
+# 确有需要时可在 config.json 写 {"legacy": {"background_salts": ["NaCl"]}} 限定。
+DEFAULT_SALTS: tuple[str, ...] = ()
 
-# 背景电解质里"盐"的种类：默认 NaNO3（含 Unicode 下标写法）。
-# 换成 NaCl / CaCl2 / KNO3 体系时，若不加进这个列表，parse_group 会一律
-# 返回 None，所有数据行都被判为"不属于任何矿物-背景组"而全部丢弃。
-# 可在 config.json 里写 {"legacy": {"background_salts": ["NaCl", "CaCl2"]}}。
-DEFAULT_SALTS = ("NaNO3", "NaNO₃")
+# 不再按文件名约定挑数据：目录里放什么就读什么，实验类型由表内内容判断
+# （见 _guess_exp）。唯一排除的是 Excel 打开文件时留下的 "~$xxx.xlsx" 锁文件。
+XLSX_SUFFIXES = (".xlsx", ".xlsm")
 
-# 仪器工作簿的命名约定：三类实验各取一个 .xlsx，文件名含关键词即可。
-# 不按这个约定命名的数据，请先整理成模板再用 --template 指定。
-WORKBOOK_PATTERNS = {
-    "isotherm": "*等温*.xlsx",
-    "kinetics": "*动力学*.xlsx",
-    "edge": "*吸附边*.xlsx",
-}
+
+def list_workbooks(data_dir: Path) -> list[Path]:
+    """目录顶层的全部 Excel（不递归子目录，跳过 ~$ 临时锁文件）。"""
+    d = Path(data_dir)
+    if not d.is_dir():
+        return []
+    return [p for p in sorted(d.iterdir())
+            if p.is_file() and p.suffix.lower() in XLSX_SUFFIXES
+            and not p.name.startswith("~$")]
 
 
 def has_workbooks(data_dir: Path) -> bool:
-    """目录顶层是否存在可识别的仪器工作簿（不递归子目录）。"""
-    # 注意：不能写 any(dir.glob(p) for p in ...) —— 元素是 glob 生成器对象，
-    # 恒为真；要逐条 any 到实际路径。
-    return any(any(data_dir.glob(pat)) for pat in WORKBOOK_PATTERNS.values())
+    """目录顶层是否存在 Excel 文件（不递归子目录）。"""
+    return bool(list_workbooks(data_dir))
 
-# 仪器表头里"初始浓度"与"总稀释倍数"的标签。换元素后表头常写成
-# "初始 As/ppm" 之类，用列表容忍多种写法。
-C0_LABELS = ("初始 Sb/ppm", "初始浓度/ppm", "初始浓度")
+# 仪器表头里"初始浓度"与"总稀释倍数"的标签。换吸附质后表头常写成
+# "初始 As/ppm" 之类，所以除固定写法外，还接受任何以"初始"开头、
+# 以"/ppm"结尾的标签（见 _find_meta）。
+C0_LABELS = ("初始浓度/ppm", "初始浓度")
 DIL_LABELS = ("总稀释倍数",)
 
 
 def _bg_pattern(salts=DEFAULT_SALTS) -> re.Pattern:
-    salt = "|".join(re.escape(s) for s in salts)
+    vals = [str(s) for s in (salts or ()) if str(s).strip()]
+    salt = "|".join(re.escape(s) for s in vals) if vals else r"[A-Za-z][A-Za-z0-9]*"
     return re.compile(
         rf"^(?P<mineral>.+?)-(?P<bg>ASW|(?P<conc>\d+(?:\.\d+)?)\s*M\s*(?:{salt}))$",
         re.IGNORECASE)
@@ -130,13 +133,11 @@ def parse_group(name: str):
     mineral = m.group("mineral").strip(" -_")
     bg = m.group("bg").upper()
     conc = m.group("conc")
-    mineral = MINERAL_DISPLAY.get(mineral, mineral)
     if bg == "ASW":
         return mineral, "ASW", np.nan
-    # 盐名从匹配到的背景串里取，不能写死 NaNO₃——换 NaCl 时组名会被
-    # 错误地统一成 NaNO₃，两个不同背景的组就被合并成一组。
+    # 盐名从匹配到的背景串里取，不能写死某一种盐——否则换 NaCl 时组名会
+    # 被错误地统一，两个不同背景的组就被合并成一组。
     salt = re.sub(r"^[\d.]+\s*M\s*", "", m.group("bg"), flags=re.I).strip()
-    salt = salt.replace("NaNO3", "NaNO₃")
     return mineral, f"{float(conc):g} M {salt}", float(conc)
 
 
@@ -149,17 +150,26 @@ def _find_header(ws):
 
 
 def _find_meta(ws, header_row: int):
-    """从表头以上区域提取初始浓度与总稀释倍数（标签见 C0_LABELS / DIL_LABELS）。"""
+    """从表头以上区域提取初始浓度与总稀释倍数。
+
+    标签不必逐字匹配：``初始 Sb/ppm``、``初始 As/ppm`` 这类写法都归到 ``c0``。
+    """
     meta = {}
     for r in range(1, header_row):
         for c in range(1, min(ws.max_column, 20) + 1):
             key = _norm(ws.cell(r, c).value)
-            if key in C0_LABELS or key in DIL_LABELS:
-                for k in range(c + 1, min(ws.max_column, c + 4) + 1):
-                    v = _num(ws.cell(r, k).value)
-                    if v is not None:
-                        meta[key] = v
-                        break
+            is_c0 = key in C0_LABELS or (key.startswith("初始") and key.endswith("/ppm"))
+            is_dil = key in DIL_LABELS
+            if not (is_c0 or is_dil):
+                continue
+            slot = "c0" if is_c0 else "dil"
+            if slot in meta:
+                continue
+            for k in range(c + 1, min(ws.max_column, c + 4) + 1):
+                v = _num(ws.cell(r, k).value)
+                if v is not None:
+                    meta[slot] = v
+                    break
     return meta
 
 
@@ -171,7 +181,54 @@ def _first_meta(meta: dict, labels) -> float | None:
     return None
 
 
-def read_sheet(path: Path, exp: str, defaults: dict | None = None):
+def _guess_exp(ws, col: dict, header_row: int) -> str:
+    """判断这个表是等温线 / 动力学 / 吸附边，只看内容不看文件名。
+
+    先看表名与表头上方的标题文字（仪器导出的表多半写了"…等温…"）；
+    标题里没有线索时再看哪一列真正有数据：
+    ``反应时间/h`` 有值 → 动力学；``目标 pH`` 有值 → 吸附边；两者都没有 → 等温线。
+    """
+    texts = [str(ws.title)]
+    for r in range(1, max(header_row, 1)):
+        for c in range(1, min(ws.max_column, 12) + 1):
+            v = ws.cell(r, c).value
+            if isinstance(v, str) and v.strip():
+                texts.append(v.strip())
+    joined = " ".join(texts)
+    if "动力" in joined or "kinetic" in joined.lower():
+        return "kinetics"
+    if "等温" in joined or "isotherm" in joined.lower():
+        return "isotherm"
+    if "吸附边" in joined or "吸附边界" in joined or "edge" in joined.lower():
+        return "edge"
+
+    def has_number(key: str) -> bool:
+        c = col.get(key)
+        if c is None:
+            return False
+        for r in range(header_row + 1, ws.max_row + 1):
+            v = ws.cell(r, c).value
+            if isinstance(v, bool) or v is None:
+                continue
+            if isinstance(v, (int, float)) and np.isfinite(v):
+                return True
+            if isinstance(v, str) and re.fullmatch(r"\s*-?\d+(?:\.\d+)?\s*", v):
+                return True
+        return False
+
+    if has_number("time"):
+        return "kinetics"
+    if has_number("ph"):
+        return "edge"
+    return "isotherm"
+
+
+def read_sheet(path: Path, exp: str | None = None, defaults: dict | None = None):
+    """读一个仪器工作簿。``exp`` 缺省时由 :func:`_guess_exp` 按内容判断。
+
+    ``defaults`` 传整份 ``config.json`` 的 ``defaults``（按实验类型分节），
+    内部按最终判定的类型取对应的一节。
+    """
     defaults = defaults or {}
     wb = load_workbook(path, data_only=True, read_only=False)
     sheet_name = "AFS数据" if "AFS数据" in wb.sheetnames else wb.sheetnames[0]
@@ -191,13 +248,17 @@ def read_sheet(path: Path, exp: str, defaults: dict | None = None):
             if val in aliases and key not in col:
                 col[key] = r
 
+    if exp is None:
+        exp = _guess_exp(ws, col, header_row)
+    defaults = defaults.get(exp, {})
+
     meta = _find_meta(ws, header_row)
     c0_default = _num(defaults.get("C0_ppm"))
     dil_default = _num(defaults.get("dilution"))
     if c0_default is None:
-        c0_default = _first_meta(meta, C0_LABELS)
+        c0_default = _first_meta(meta, ("c0",))
     if dil_default is None:
-        dil_default = _first_meta(meta, DIL_LABELS)
+        dil_default = _first_meta(meta, ("dil",))
 
     rows, qc_rows = [], []
     current_group = None
@@ -313,45 +374,50 @@ def read_sheet(path: Path, exp: str, defaults: dict | None = None):
         warnings.append(f"{path.name}: 未解析到有效数据行")
     if unknown_rows:
         warnings.append(
-            f"{path.name}: {len(unknown_rows)} 行有数据但样品名不属于任何矿物-背景组，已排除（行号 "
+            f"{path.name}: {len(unknown_rows)} 行有数据但样品名不属于任何吸附剂-背景组，已排除（行号 "
             + ", ".join(str(x[0]) for x in unknown_rows[:8])
             + ("..." if len(unknown_rows) > 8 else "")
             + "）"
         )
     qc = pd.DataFrame(qc_rows)
+    if isinstance(meta, dict):
+        meta["exp"] = exp          # 判定的实验类型回传给调用方
     return df, qc, meta, warnings
 
 
-def read_all(data_dir: Path, cfg: dict):
+def read_all(data_dir: Path, cfg: dict, paths=None):
+    """读取目录里**全部** Excel，逐个判断实验类型后合并。
+
+    不再依赖文件名关键词：什么名字都行，一个工作簿装一类实验即可。
+    ``paths`` 用于只读指定文件（pipeline 里把模板挑出去后传剩下的一批）。
+    """
     salts = (cfg.get("legacy") or {}).get("background_salts")
     if salts:
         set_background_salts(salts)
-    files = {exp: sorted(data_dir.glob(pat)) for exp, pat in WORKBOOK_PATTERNS.items()}
+    files = list_workbooks(data_dir) if paths is None else [Path(p) for p in paths]
     frames, qcs, metas, warnings = [], [], {}, []
-    for exp, paths in files.items():
-        if not paths:
-            warnings.append(f"未找到 {exp} 数据文件")
+    if not files:
+        return pd.DataFrame(), pd.DataFrame(), {}, ["目录里没有 Excel 文件"]
+    defaults = cfg.get("defaults", {})
+    for p in files:
+        df, qc, meta, warn = read_sheet(p, defaults=defaults)
+        exp = meta.get("exp") if isinstance(meta, dict) else None
+        if df.empty:
+            warnings.extend(warn or [f"{p.name}: 未解析到有效数据行"])
             continue
-        # Excel 打开文件时会在同目录留一个 "~$xxx.xlsx" 锁文件，它不是数据。
-        # 过滤后可能一个都不剩（只开了 Excel 还没保存过别的），过去直接
-        # 取 [0] 会抛 IndexError，整条流水线连提示都没有就崩掉。
-        usable = [x for x in paths if not x.name.startswith("~$")]
-        if not usable:
-            warnings.append(f"{exp}：只匹配到 Excel 临时文件（~$…），已跳过；"
-                            "请先关闭 Excel 再重跑。")
-            continue
-        p = usable[0]
-        if len(usable) > 1:
-            warnings.append(
-                f"{exp}：匹配到 {len(usable)} 个文件，仅使用 {p.name}，"
-                f"其余（{', '.join(x.name for x in usable[1:])}）已忽略；"
-                "如需指定请改用 --template。")
-        df, qc, meta, warn = read_sheet(p, exp, cfg.get("defaults", {}).get(exp, {}))
         frames.append(df)
         if not qc.empty:
             qcs.append(qc)
-        metas[exp] = meta
-        warnings.extend(warn)
+        metas[p.name] = meta if isinstance(meta, dict) else {"exp": exp}
+        warnings.extend(warn or [])
     data = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
     qc = pd.concat(qcs, ignore_index=True) if qcs else pd.DataFrame()
+
+    # 缺哪类实验，直接说；这比"未找到 xxx 文件"更贴近实际（类型是判出来的，不是名字给的）
+    if not data.empty:
+        have = set(data["exp"].dropna().unique())
+        label = {"isotherm": "等温线", "kinetics": "动力学", "edge": "吸附边"}
+        missing = [v for k, v in label.items() if k not in have]
+        if missing:
+            warnings.append(f"数据里没有{'、'.join(missing)}实验，相关的图与表会留空")
     return data, qc, metas, warnings

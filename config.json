@@ -1,23 +1,7 @@
 {
   "solid_g_per_L": null,
-  "solids_g_per_L": {
-    "δ-MnO₂": 1.0,
-    "Rancieite": 1.0,
-    "Todorokite": 1.0,
-    "Acid birnessite": 3.0,
-    "Alkaline birnessite": 3.0,
-    "Feroxyhyte": 0.5
-  },
+  "solids_g_per_L": {},
   "data_dir": "data",
   "output_dir": "output",
-  "defaults": {
-    "kinetics": {
-      "C0_ppm": 6.0,
-      "dilution": 598.8889
-    },
-    "edge": {
-      "C0_ppm": 6.0,
-      "dilution": 600.0
-    }
-  }
+  "defaults": {}
 }

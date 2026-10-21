@@ -1,24 +1,62 @@
-cmd
+吸附分析 · 命令速查
+================================================================
 
-cd /d C:\Users\Uers\Desktop\分析
+三种入口等价，任选其一：
+  双击 adsorp.bat           （无参 = run，结束自动打开报告）
+  .\adsorp.bat  run         （PowerShell，注意前面的 .\）
+  adsorp.bat    run         （cmd）
 
-rem 1) 把工作簿放进 data\（或项目根目录），然后直接跑
-adsorp.bat run
+  .\adsorp.ps1  run         原生 PowerShell 版本，但需先放开执行策略（见文末）
 
-rem 2) 打开报告
-start output\报告.html
+----------------------------------------------------------------
+日常
+----------------------------------------------------------------
+cd "C:\path\to\分析"                  # PowerShell 用 cd
+.\adsorp.bat run                       # 读 data\ 出结果
+Invoke-Item output\报告.html           # 打开报告（cmd 用 start）
 
-rem 只重绘图与报告，不重跑拟合（调图版式时用）
-adsorp.bat run --reuse
+.\adsorp.bat run --reuse               # 只重绘图与报告，不重跑拟合
 
-rem 指定别的数据目录
-adsorp.bat run --data-dir D:\某批数据
+----------------------------------------------------------------
+换数据
+----------------------------------------------------------------
+# 方式 1：工作簿丢进 data\（文件名含 等温 / 动力学 / 吸附边）
+.\adsorp.bat run
 
-rem 用填好的模板（含固液比等元数据）
-adsorp.bat run --template templates\吸附数据_已填示例.xlsx
+# 方式 2：整理成长表模板
+.\adsorp.bat template                                    # 生成空白模板
+.\adsorp.bat check  --template templates\吸附数据模板.xlsx  # 只校验，几秒
+.\adsorp.bat run    --template templates\吸附数据模板.xlsx
 
-rem 只校验模板，不拟合（几秒）
-adsorp.bat check --template templates\吸附数据_已填示例.xlsx
+# 方式 3：任意目录
+.\adsorp.bat run --data-dir D:\某批数据
 
-rem 生成空白模板（默认写到 templates\吸附数据模板.xlsx）
-adsorp.bat template
+# 方式 4：把当前已解析的数据导出成模板，改完再跑
+.\adsorp.bat export --out 示例.xlsx
+
+----------------------------------------------------------------
+排错
+----------------------------------------------------------------
+.\adsorp.bat check --template 你的表.xlsx    # 先看行数/分组/缺列
+Get-Content output\run.log                    # 上次运行日志（PowerShell）
+type output\run.log                           # 上次运行日志（cmd）
+
+找不到 Python：设置环境变量指向解释器
+  $env:ADSORP_PYTHON = "C:\Python313\python.exe"     # PowerShell
+  set ADSORP_PYTHON=C:\Python313\python.exe           # cmd
+
+依赖缺失：
+  pip install -r requirements.txt
+
+----------------------------------------------------------------
+关于 PowerShell 执行策略
+----------------------------------------------------------------
+Windows 默认 Restricted，.ps1 一律不让跑，报「禁止运行脚本」。
+【最省事】改用 .\adsorp.bat —— .bat 不受执行策略限制，效果完全相同。
+
+确实想用 .ps1，二选一：
+  1) 只放开当前用户（一次即可，可随时改回 Undefined）
+       Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
+     还原：Set-ExecutionPolicy -Scope CurrentUser Undefined
+  2) 每次都绕过（不改系统设置）
+       powershell -ExecutionPolicy Bypass -File .\adsorp.ps1 run

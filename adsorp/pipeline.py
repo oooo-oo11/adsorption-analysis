@@ -17,9 +17,9 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from . import analyze, names as N, report, viz
-from .io import has_workbooks, read_all
-from .template import read_template
+from . import analyze, names as N, report, style as S, viz
+from .io import has_workbooks, list_workbooks, read_all
+from .template import read_template, split_workbooks
 
 BASE = Path(__file__).resolve().parent.parent
 
@@ -59,6 +59,67 @@ def resolve_solid(cfg: dict, override: float | None) -> float | dict | None:
             isinstance(v, (int, float)) and np.isfinite(v) and v > 0 for v in solid.values()):
         solid = None
     return solid
+
+
+def _merge_template_solids(data: pd.DataFrame, cfg_t: dict,
+                           solid: float | dict | None,
+                           io_warn: list[str]):
+    """把模板 Settings 的 ``solid:<名称>`` 合并进本次固液比。
+
+    模板里的值代表本次数据集，优先于 config.json 的默认字典；``--solid`` 标量
+    仍然最高（调用方已处理）。键允许写中文，统一经 names 映射后再合并。
+    """
+    tmpl_solids = {}
+    for k, v in (cfg_t.get("solids_g_per_L") or {}).items():
+        try:
+            fv = float(v)
+        except (TypeError, ValueError):
+            continue
+        if np.isfinite(fv) and fv > 0:
+            tmpl_solids[N.mineral(str(k))] = fv
+    if tmpl_solids:
+        # 名称全对不上＝等于没填：Settings 写 solid:钙锰矿、Data 全写 Todorokite 时，
+        # 固液比会静默丢失、qe 退化成 mg/L(悬浮液)。只有"一个都对不上"才报警，
+        # 否则 Settings 里多带的其它体系（本次数据没用到）会造成无谓的噪声。
+        present = {str(m) for m in data["mineral"].dropna().unique()} if "mineral" in data else set()
+        if present and not (set(tmpl_solids) & present):
+            io_warn.append(
+                "Settings 的固液比没匹配到数据里的吸附剂名："
+                + "、".join(f"solid:{k}" for k in sorted(tmpl_solids)[:5])
+                + f"；数据中是 {'、'.join(sorted(present)[:6])}。"
+                "两边写成同一个名字（或在 names.json 里建立映射）才会生效，"
+                "否则 qe 按 mg/L(悬浮液) 计算。")
+        if solid is None:
+            solid = tmpl_solids
+        elif isinstance(solid, dict):
+            solid = {**solid, **tmpl_solids}
+    if solid is None and "solid_g_per_L" in data:
+        per_row = {}
+        for m, v in zip(data["mineral"], data["solid_g_per_L"]):
+            if pd.notna(v):
+                per_row.setdefault(m, float(v))
+        solid = per_row or None
+    # 逐行固液比与 Settings 冲突时说明一句：现在行内值优先（更具体），
+    # 但填表人可能以为 Settings 会覆盖，qe 差一倍却看不出来源。
+    if "solid_g_per_L" in data and isinstance(solid, dict):
+        conflicts = sorted({
+            f"{m}：表内 {float(v):g}、Settings {s:g}"
+            for m, v in zip(data["mineral"], data["solid_g_per_L"])
+            if pd.notna(v) and (s := analyze._solid_for(solid, m)) is not None
+            and abs(float(v) - s) > 1e-9})
+        if conflicts:
+            io_warn.append("固液比在 Data 表与 Settings 中数值不同，已按 Data 表逐行值计算："
+                           + "；".join(conflicts[:5])
+                           + ("…" if len(conflicts) > 5 else ""))
+    return solid
+
+
+def _template_qc(cfg_t: dict) -> pd.DataFrame:
+    """模板里的 exp=qc 行；没有时返回带列名的空表。"""
+    qc = cfg_t.get("qc")
+    if not isinstance(qc, pd.DataFrame) or qc.empty:
+        qc = pd.DataFrame(columns=["exp", "qc", "nominal_ppb", "conc_ppb", "recovery_pct"])
+    return qc
 
 
 def run(*, data_dir: str | Path | None = None,
@@ -108,72 +169,77 @@ def run(*, data_dir: str | Path | None = None,
                 st.get("qc", pd.DataFrame()))
         return _finish(out, make_figs, verbose, {k: st.get(k) for k in CACHE_KEYS})
 
-    if template:
-        log(f"[1/5] 读取模板：{template}")
-        data, cfg_t, io_warn = read_template(Path(template), defaults=cfg.get("defaults"))
-        # 模板 Settings 的 solid:<矿物> 是本次数据集的固液比，优先于 config.json
-        # 的默认值（CLI --solid 标量最高，不被覆盖）。键允许写中文矿物名，
-        # 统一经 names 映射到英文显示名后再合并，避免两处写法不一致时静默丢值。
-        tmpl_solids = {}
-        for k, v in (cfg_t.get("solids_g_per_L") or {}).items():
-            try:
-                fv = float(v)
-            except (TypeError, ValueError):
-                continue
-            if np.isfinite(fv) and fv > 0:
-                tmpl_solids[N.mineral(str(k))] = fv
-        if tmpl_solids:
-            if solid is None:
-                solid = tmpl_solids
-            elif isinstance(solid, dict):
-                solid = {**solid, **tmpl_solids}
-        if solid is None and "solid_g_per_L" in data:
-            per_row = {}
-            for m, v in zip(data["mineral"], data["solid_g_per_L"]):
-                if pd.notna(v):
-                    per_row.setdefault(m, float(v))
-            solid = per_row or None
-        # 逐行固液比与 Settings 冲突时说明一句：现在行内值优先（更具体），
-        # 但填表人可能以为 Settings 会覆盖，qe 差一倍却看不出来源。
-        if "solid_g_per_L" in data and isinstance(solid, dict):
-            conflicts = sorted({
-                f"{m}：表内 {float(v):g}、Settings {s:g}"
-                for m, v in zip(data["mineral"], data["solid_g_per_L"])
-                if pd.notna(v) and (s := analyze._solid_for(solid, m)) is not None
-                and abs(float(v) - s) > 1e-9})
-            if conflicts:
-                io_warn.append("固液比在 Data 表与 Settings 中数值不同，已按 Data 表逐行值计算："
-                               + "；".join(conflicts[:5])
-                               + ("…" if len(conflicts) > 5 else ""))
-        # #23：模板也能带 QC 行（exp=qc），read_template 会把它们分离出来
-        qc = cfg_t.get("qc")
-        if not isinstance(qc, pd.DataFrame) or qc.empty:
-            qc = pd.DataFrame(columns=["exp", "qc", "nominal_ppb", "conc_ppb", "recovery_pct"])
+    cfg_t: dict = {}
+    qc = pd.DataFrame(columns=["exp", "qc", "nominal_ppb", "conc_ppb", "recovery_pct"])
+    io_warn: list[str] = []
+    tpl = Path(template) if template else None
+
+    if tpl is not None:
+        log(f"[1/5] 读取模板：{tpl}")
+        data, cfg_t, io_warn = read_template(tpl, defaults=cfg.get("defaults"))
+        solid = _merge_template_solids(data, cfg_t, solid, io_warn)
+        qc = _template_qc(cfg_t)
     else:
         data_dir = resolve_data_dir(cfg, data_dir)
         log(f"[1/5] 读取数据：{data_dir}")
-        data, qc, _, io_warn = read_all(data_dir, cfg)
-        cfg_t = {}
+        data = pd.DataFrame()
+        # 目录里放什么就读什么，不看文件名：模板（Data+Settings 两张表）
+        # 与仪器原始工作簿可以混放，各自走各自的分支。
+        books = list_workbooks(data_dir)
+        tpls, raws = split_workbooks(books)
+        if len(raws) > 1:
+            log(f"      发现 {len(raws)} 个工作簿：{'、'.join(p.name for p in raws)}")
+        if raws:
+            data, qc, metas, io_warn = read_all(data_dir, cfg, paths=raws)
+            label = {"isotherm": "等温线", "kinetics": "动力学", "edge": "吸附边"}
+            for _name, _m in metas.items():
+                log(f"      {_name} → {label.get(_m.get('exp'), '未识别')}")
+            if tpls:
+                io_warn.append(
+                    "目录里同时有模板（" + "、".join(p.name for p in tpls)
+                    + "）与仪器原始工作簿，本次按原始工作簿计算；"
+                    "想用模板请加 --template。")
+        if data.empty and tpls:
+            tpl = max(tpls, key=lambda p: p.stat().st_mtime)
+            log(f"      改用模板：{tpl.name}")
+            if len(tpls) > 1:
+                io_warn.append(
+                    "目录里有多个模板（" + "、".join(p.name for p in tpls)
+                    + f"），本次用修改时间最新的 {tpl.name}；其余请加 --template 指定。")
+            data, cfg_t, io_warn = read_template(tpl, defaults=cfg.get("defaults"))
+            solid = _merge_template_solids(data, cfg_t, solid, io_warn)
+            qc = _template_qc(cfg_t)
 
     if data.empty:
-        if template:
-            msg = f"未解析到数据：模板 {template} 的 Data 表是空的，或列名不匹配。"
+        if tpl is not None:
+            msg = f"未解析到数据：模板 {tpl} 的 Data 表是空的，或列名不匹配。"
         else:
+            seen = [p.name for p in list_workbooks(Path(data_dir))]
+            hint = (f"目录里有 {len(seen)} 个 Excel（{'、'.join(seen[:4])}"
+                    + ("…" if len(seen) > 4 else "") + "），但没有一个能识别。\n"
+                    if seen else "目录里没有 Excel 文件。\n")
             msg = ("未解析到数据：data/ 和项目根目录都没有可识别的表。\n"
-                   "  · 文件名需含 等温 / 动力学 / 吸附边（.xlsx）；\n"
-                   "  · 已整理的数据用 --template 指定模板（adsorp.bat template 可生成空白模板）。")
+                   + hint
+                   + "  · 仪器原始工作簿：直接放进去即可，软件按表内内容判断实验类型，不需要改文件名；\n"
+                   "  · 已整理的长表：需有 Data 表（表头含 exp / mineral / Ce_ppm）；\n"
+                   "  · 也可以 adsorp.bat run --template 你的表.xlsx 显式指定。")
         raise SystemExit(msg)
     log(f"      {len(data)} 行有效数据；QC {len(qc)} 条")
+    # 配色/形状按本次数据的名称登记，换体系不需要改代码
+    S.register_categories(data["mineral"], data["background"])
 
     log(f"[2/5] 计算 Ce / qe / 吸附分数")
     # D-R 的 ε 依赖吸附质摩尔质量与温度，两者都在模板 Settings 里；
     # 这里在读数据后立即生效，后面的拟合与出图都用同一套常数。
     from .models import configure_dr
-    settings = (cfg_t.get("settings") if template else None) or {}
+    settings = (cfg_t.get("settings") or {}) if cfg_t else {}
     dr_ctx = configure_dr(settings.get("molar_mass_g_per_mol"),
                           settings.get("temperature_K"))
-    if template and settings:
-        log(f"      D-R 常数：M = {dr_ctx['molar_mass']:g} g/mol，T = {dr_ctx['temperature']:g} K")
+    if settings and dr_ctx.get("molar_mass"):
+        log(f"      D-R 常数：M = {dr_ctx['molar_mass']:g} g/mol，"
+            f"T = {dr_ctx['temperature']:g} K")
+    elif settings:
+        log("      未提供 molar_mass_g_per_mol，本次跳过 D-R 模型")
     iso = analyze.isotherm_data(data, solid)
     kin = analyze.kinetics_data(data, solid)
     edge = analyze.edge_data(data)
@@ -191,6 +257,9 @@ def run(*, data_dir: str | Path | None = None,
     edge_params, curves_edge, edge_cmp, w3 = analyze.analyze_edges(edge)
     warns = (io_warn + analyze.raw_warnings(data) + w1 + w2 + w3
              + analyze.data_warnings(iso, kin, edge, qc))
+    if not dr_ctx.get("molar_mass"):
+        warns.append("未填吸附质摩尔质量（Settings 的 molar_mass_g_per_mol），"
+                     "D-R 模型未参与拟合；其余等温线模型不受影响。")
     issues = analyze.quality_issues(data, iso, kin, edge, qc)
 
     iso_audit = analyze.model_audit(iso_fits, "isotherm")

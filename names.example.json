@@ -1,0 +1,14 @@
+{
+  "minerals": {
+    "赤铁矿": "Hematite",
+    "针铁矿": "Goethite"
+  },
+  "backgrounds": {
+    "0.01M NaCl": "0.01 M NaCl"
+  },
+  "experiments": {
+    "isotherm": "Isotherm",
+    "kinetics": "Kinetics",
+    "edge": "Edge"
+  }
+}

@@ -2,7 +2,7 @@
 
 版式约定：17.2 cm 版心、2 列紧凑网格、Times New Roman、四边细黑框、
 刻度朝内、无网格、实心彩标 + 深灰描边、拟合曲线紫虚线 / 黑实线。
-所有文字均为英文；矿物名经 :mod:`adsorp.names` 映射（见项目根 names.json）。
+所有文字均为英文；吸附剂名经 :mod:`adsorp.names` 映射（见项目根 names.json）。
 """
 from __future__ import annotations
 
@@ -282,7 +282,7 @@ def plot_edges(curves: dict, out: Path):
 
     handles, seen = [], {}
     for ax, letter, mineral in zip(axes, _letters(len(minerals)), minerals):
-        # 该矿物所有离子强度里最低的吸附率：出现负值时把纵轴拉下去，
+        # 该吸附剂所有离子强度里最低的吸附率：出现负值时把纵轴拉下去，
         # 不把点裁到框外（是否剔除由使用者在模板 exclude 列决定）。
         ys = [float(np.nanmin(c["data"]["theta"])) * 100
               for (m, _), c in curves.items() if m == mineral]
@@ -304,8 +304,8 @@ def plot_edges(curves: dict, out: Path):
             if m != mineral:
                 continue
             d = c["data"]
-            color = S.BG_COLOR.get(bg, S.INK)
-            marker = S.BG_MARKER.get(bg, "o")
+            color = S.bg_color(bg)
+            marker = S.bg_marker(bg)
             yerr = _err(d.get("theta_sd"))
             if yerr is not None:
                 ax.errorbar(d["pH"], d["theta"] * 100, yerr=yerr * 100,
@@ -378,7 +378,7 @@ def plot_residuals(curves_iso: dict, curves_kin: dict, out: Path):
     fig, axes = S.new_grid(2, 2, width_cm=17.2, height_cm=8.2, bottom=0.245)
     panels = [(axes.ravel()[0], "a", curves_iso, "Isotherm", True),
               (axes.ravel()[1], "b", curves_kin, "Kinetics", False)]
-    shown = {}   # 按数据里出现的顺序记矿物，图例顺序才稳定
+    shown = {}   # 按数据里出现的顺序记吸附剂，图例顺序才稳定
     for ax, letter, curves, title, logx in panels:
         if not curves:
             ax.axis("off")
@@ -404,7 +404,7 @@ def plot_residuals(curves_iso: dict, curves_kin: dict, out: Path):
             rel_all.append(rel[keep])
             xs.append(obs[keep])
             ax.plot(obs[keep], rel[keep], linestyle="none",
-                    marker=S.BG_MARKER.get(bg, "o"), markersize=4.6,
+                    marker=S.bg_marker(bg), markersize=4.6,
                     markerfacecolor=S.mineral_color(m),
                     markeredgecolor=S.EDGE, markeredgewidth=0.6, zorder=5)
         ax.axhline(0, color=S.INK, lw=0.9, zorder=2)

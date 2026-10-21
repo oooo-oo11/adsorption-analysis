@@ -10,16 +10,17 @@ from scipy.stats import linregress
 
 from . import names as N
 from .fit import FitResult, best_result, fit_many, rank
-from .models import ISOTHERM_MODELS, KINETIC_MODELS, dr_energy
+from .models import KINETIC_MODELS, active_isotherms, dr_energy
 
 
 def _solid_for(solid, mineral: str) -> float | None:
-    """取某矿物的固液比 m/V (g/L)。
+    """取某吸附剂的固液比 m/V (g/L)。
 
-    ``solid`` 可以是标量（全部体系同值）、``{矿物: g/L}`` 字典，或 None。
-    本项目的五个体系固液比并不相同（0.5 / 1 / 3 g/L），必须按矿物分别取。
+    ``solid`` 可以是标量（全部体系同值）、``{吸附剂: g/L}`` 字典，或 None。
+    不同吸附剂的固液比往往不同（例如 0.5 / 1 / 3 g/L 混在一批数据里），
+    所以必须按吸附剂分别取，不能全局套一个数。
 
-    键名允许中英混用：数据表里写 ``Rancieite``、配置里写 ``钙锰矿``（或反之）
+    键名允许中英混用：数据表里写 ``Goethite``、配置里写 ``针铁矿``（或反之）
     时按 names 映射后的显示名对齐，避免换个写法就静默丢固液比。
     """
     if solid is None:
@@ -45,17 +46,17 @@ def _solid_for(solid, mineral: str) -> float | None:
 
 
 def _unit(solid):
-    """容量单位。传字典时，只要有任一矿物给了 m/V 就按 mg/g 记。"""
+    """容量单位。传字典时，只要有任一吸附剂给了 m/V 就按 mg/g 记。"""
     if isinstance(solid, dict):
         return "mg/g" if any(_solid_for(solid, k) for k in solid) else "mg/L(悬浮液)"
     return "mg/L(悬浮液)" if not solid else "mg/g"
 
 
 def _solid_series(df: pd.DataFrame, solid) -> pd.Series:
-    """逐行固液比 m/V：**行内值优先**，为空才回退 Settings / 矿物映射。
+    """逐行固液比 m/V：**行内值优先**，为空才回退 Settings / 吸附剂映射。
 
     模板里逐行填的 ``solid_g_per_L`` 是这一行真实的 m/V，比 Settings 里
-    按矿物给的单值更具体。两者的优先级若写反（Settings 覆盖行内值），
+    按吸附剂给的单值更具体。两者的优先级若写反（Settings 覆盖行内值），
     表内写 2、Settings 写 1 时 qe 会整整放大一倍，且报告里看不出来。
     """
     fallback = pd.Series([_solid_for(solid, m) for m in df["mineral"]],
@@ -106,7 +107,7 @@ EXP_SPECS = (
 
 
 def _short_groups(iso: pd.DataFrame, kin: pd.DataFrame, edge: pd.DataFrame):
-    """点数不足的组：``(exp, 显示名, 矿物, 背景, 条件列, 实际点数, 需要点数)``。"""
+    """点数不足的组：``(exp, 显示名, 吸附剂, 背景, 条件列, 实际点数, 需要点数)``。"""
     frames = {"isotherm": iso, "kinetics": kin, "edge": edge}
     for exp, label, col, need in EXP_SPECS:
         frame = frames[exp]
@@ -190,7 +191,7 @@ def analyze_isotherms(df: pd.DataFrame, solid: float | None):
                          "（双参数模型至少需要 4 点才能给出自由度）。")
             continue
 
-        results = fit_many(ISOTHERM_MODELS, fit_agg["Ce_ppm"], fit_agg["qe"], n_starts=36)
+        results = fit_many(active_isotherms(), fit_agg["Ce_ppm"], fit_agg["qe"], n_starts=36)
         for r in results:
             row = {"mineral": mineral, "background": background,
                    "ionic_strength_M": g["ionic_strength_M"].iloc[0],

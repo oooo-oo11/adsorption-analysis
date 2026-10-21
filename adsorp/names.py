@@ -1,14 +1,19 @@
-"""矿物 / 背景电解质的显示名。
+"""吸附剂 / 背景电解质的显示名映射（可选）。
 
-现在数据表里**直接写英文名**（模板已改为英文，图上原样显示、不再翻译）：
-``mineral("Rancieite") -> "Rancieite"`` 属于直通，无需在 names.json 里登记。
-本模块的作用变成两层：
+数据表里**直接写英文名**最省事：``mineral("Goethite") -> "Goethite"`` 属于
+直通，不需要任何配置。本模块只在两种情况下有用：
 
-* 兼容旧的中文数据表——中文名映射到英文显示名后照常出图；
-* 统一别名（例如 ``birnessite`` 的几种写法）——在 names.json 里加一行即可。
+* 旧的中文数据表——把中文名映射到英文显示名后照常出图；
+* 同一物质的多种写法——归并成一个名字，避免被拆成两组。
 
-注意：中文名只作为**数据键**使用，画图时一律经 :func:`mineral` / :func:`background`
-转成英文，因此图中不会出现 CJK 字形问题。
+映射写在项目根目录的 ``names.json``（不随仓库分发，可自行创建）：
+
+.. code-block:: json
+
+    {"minerals": {"赤铁矿": "Hematite"}, "backgrounds": {}}
+
+注意：中文名只作为**数据键**使用，画图时一律经 :func:`mineral` /
+:func:`background` 转成英文，因此图中不会出现 CJK 字形问题。
 """
 from __future__ import annotations
 
@@ -16,24 +21,8 @@ import json
 from pathlib import Path
 
 DEFAULTS = {
-    "minerals": {
-        "δ-MnO₂": "δ-MnO₂",
-        "钙锰矿": "Rancieite",
-        "酸性水钠锰矿": "Acid birnessite",
-        "碱性水钠锰矿": "Alkaline birnessite",
-        "六方纤铁矿": "Feroxyhyte",
-        # 英文名与显示名一致，列出只是让别名表自解释
-        "Rancieite": "Rancieite",
-        "Acid birnessite": "Acid birnessite",
-        "Alkaline birnessite": "Alkaline birnessite",
-        "Feroxyhyte": "Feroxyhyte",
-    },
-    "backgrounds": {
-        "0.001 M NaNO₃": "0.001 M NaNO₃",
-        "0.01 M NaNO₃": "0.01 M NaNO₃",
-        "0.1 M NaNO₃": "0.1 M NaNO₃",
-        "ASW": "ASW",
-    },
+    "minerals": {},
+    "backgrounds": {},
     "experiments": {"isotherm": "Isotherm", "kinetics": "Kinetics", "edge": "Edge"},
 }
 

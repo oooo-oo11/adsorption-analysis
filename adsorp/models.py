@@ -14,10 +14,11 @@ R_GAS = 8.314462618  # J/(mol K)
 
 # D-R 的吸附势 ε = RT·ln(1+1/C_mol) 同时依赖吸附质摩尔质量与温度。
 # 这两个值不是常数：换吸附质或换温度，ε 整体平移，K_DR 与 E 都会变。
-# 由 pipeline 从模板 Settings 的 molar_mass_g_per_mol / temperature_K 注入，
-# 未提供时才退回这里的默认值。用模块级 dict 而非函数形参，是为了不改
-# Model.func 的签名（7 个等温线 + 5 个动力学函数共用同一套调用约定）。
-DR_CONTEXT = {"molar_mass": 121.76, "temperature": 298.15}
+# 由 pipeline 从模板 Settings 的 molar_mass_g_per_mol / temperature_K 注入；
+# 没有提供摩尔质量时不拟合 D-R（见 active_isotherms），其余模型不受影响。
+# 用模块级 dict 而非函数形参，是为了不改 Model.func 的签名
+# （7 个等温线 + 5 个动力学函数共用同一套调用约定）。
+DR_CONTEXT = {"molar_mass": None, "temperature": 298.15}
 
 # 容量参数的单位有两种口径（有 m/V 记 mg/g，没有则记 mg/L 悬浮液），
 # 模型级只写占位符 {q}，渲染参数表时用该组实际的 qe_unit 替换。
@@ -115,11 +116,14 @@ def _temkin_bounds(x, y):
 def _dr(x, p):
     """Dubinin-Radushkevich，x 为 mg/L，内部换算为 mol/L 计算吸附势 ε(kJ/mol)。
 
-    换算依赖吸附质摩尔质量与温度，两者由 :func:`configure_dr` 注入
-    （默认 121.76 g/mol / 298.15 K，即 Sb(V) 在室温下）。
+    换算依赖吸附质摩尔质量与温度，两者由 :func:`configure_dr` 注入。
+    未提供摩尔质量时该模型不会进入拟合（:func:`active_isotherms`）。
     """
     qm, Kdr = p
-    cm = np.maximum(x, 1e-30) / 1000.0 / DR_CONTEXT["molar_mass"]
+    molar_mass = DR_CONTEXT.get("molar_mass")
+    if not molar_mass:
+        raise ValueError("D-R 模型需要吸附质摩尔质量：请在模板 Settings 填 molar_mass_g_per_mol")
+    cm = np.maximum(x, 1e-30) / 1000.0 / molar_mass
     eps = R_GAS * DR_CONTEXT["temperature"] * np.log1p(1.0 / cm) / 1000.0  # kJ/mol
     return qm * np.exp(-Kdr * eps ** 2)
 
@@ -217,6 +221,19 @@ ISOTHERM_MODELS: dict[str, Model] = {
               "三参数混合模型；g→1 接近 Langmuir，g→0 接近 Henry。"),
     ]
 }
+
+
+def active_isotherms() -> dict[str, Model]:
+    """本次可拟合的等温线模型。
+
+    D-R 的平均吸附自由能 E 依赖吸附质摩尔质量；模板没填
+    ``molar_mass_g_per_mol`` 时把 D-R 从拟合列表里去掉，避免输出一个
+    看起来正常、实际按错误摩尔质量换算的 E。
+    """
+    out = dict(ISOTHERM_MODELS)
+    if not DR_CONTEXT.get("molar_mass"):
+        out.pop("dr", None)
+    return out
 
 
 # --------------------------------------------------------------------------

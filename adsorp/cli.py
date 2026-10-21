@@ -39,7 +39,7 @@ def _cmd_run(a) -> int:
 def _cmd_template(a) -> int:
     p = write_template(a.path)
     print(f"已生成模板：{p}")
-    print("填写 Data 表后在 Settings 的 solids 区填各矿物固液比，然后运行：")
+    print("填写 Data 表后在 Settings 的 solids 区填各吸附剂固液比，然后运行：")
     print(f"  adsorp.bat run --template \"{p.as_posix()}\" --out output")
     return 0
 
@@ -178,7 +178,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--out", default="output", help="输出目录")
     p.add_argument("--solid", type=float, default=None, help="覆盖固液比 (g/L)")
     p.add_argument("--config", default="config.json")
-    p.add_argument("--names", default="names.json", help="矿物中英文映射")
+    p.add_argument("--names", default="names.json", help="吸附剂中英文映射")
     p.add_argument("--no-figs", action="store_true", help="只出表，不重绘图")
     p.add_argument("--reuse", action="store_true",
                    help="复用 output/_analysis.pkl，只重绘图与报告")
