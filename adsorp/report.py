@@ -4,6 +4,7 @@ from __future__ import annotations
 import ast
 import base64
 import html as _html
+import json
 import textwrap
 import zipfile
 from datetime import datetime
@@ -52,9 +53,10 @@ li{margin:5px 0}
 figure{margin:16px 0 8px}
 figure img{width:100%;border:1px solid var(--line);border-radius:4px}
 .dl{margin:8px 0 2px;font-size:12px;color:var(--muted)}
-.dl a{color:var(--accent);text-decoration:none;border-bottom:1px solid rgba(29,78,216,.35);
-      padding-bottom:1px;margin-right:2px}
-.dl a:hover{border-bottom-color:var(--accent)}
+.dl a,.dl button{background:none;border:0;border-bottom:1px solid rgba(29,78,216,.35);
+      padding:0 0 1px;margin-right:2px;font:inherit;color:var(--accent);
+      text-decoration:none;cursor:pointer}
+.dl a:hover,.dl button:hover{border-bottom-color:var(--accent)}
 .dl .src{color:#9ca3af}
 .figlist{width:100%;border-collapse:collapse;font-size:13px}
 .figlist td{padding:7px 9px;border-bottom:1px solid var(--line);vertical-align:middle}
@@ -95,7 +97,148 @@ details.code .codetip{padding:8px 14px;border-top:1px dashed var(--line);
 .ref{font-size:12.5px;color:#374151}
 .foot{margin-top:36px;padding-top:14px;border-top:1px solid var(--line);
       color:var(--muted);font-size:12px}
-@media print{body{background:#fff}.wrap{box-shadow:none;margin:0;padding:0;max-width:none}}
+@media print{body{background:#fff}.wrap{box-shadow:none;margin:0;padding:0;max-width:none}
+             .dl,.axswitch{display:none}}
+"""
+
+# 页面脚本：横坐标切换 + 文件下载。
+# 下载一律走 Blob（页面内由内嵌 base64 现算），不用 data: 链接——Chrome 会把
+# data: 链接的下载判为「不安全下载」直接拦掉；Blob 由本地页面生成，既不会被拦，
+# 落盘也不会带 Mark-of-the-Web，双击即可打开。全部逻辑不依赖任何外部文件。
+JS = r"""
+function axSwitch(inp) {
+  var g = inp.name.replace(/^ax_/, "");
+  document.querySelectorAll('[data-ax="' + g + '"]').forEach(function (el) {
+    el.style.display = (el.getAttribute("data-ver") === inp.value) ? "" : "none";
+  });
+}
+
+function b64ToBytes(b64) {
+  var bin = atob(b64), n = bin.length, out = new Uint8Array(n);
+  for (var i = 0; i < n; i++) out[i] = bin.charCodeAt(i);
+  return out;
+}
+
+function saveBlob(blob, name) {
+  var url = URL.createObjectURL(blob);
+  var a = document.createElement("a");
+  a.href = url; a.download = name;
+  document.body.appendChild(a); a.click();
+  setTimeout(function () { URL.revokeObjectURL(url); a.remove(); }, 1500);
+}
+
+/* 全部矢量图（PDF）的 base64 只存一份，放在页首的 #pdfdata 里。 */
+var PDFS = {};
+try { PDFS = JSON.parse(document.getElementById("pdfdata").textContent || "{}"); } catch (e) { PDFS = {}; }
+
+/* 单图 PNG：取页面里同名 img 标签的 base64（切换图取当前可见那一版），不复制第二份。 */
+function dlImg(btn) {
+  var name = btn.getAttribute("data-name"), img = null;
+  if (name) img = document.querySelector('img[data-name="' + name + '"]');
+  if (!img) {
+    var fig = btn.closest("figure"), dl = btn.closest(".dl");
+    if (dl && dl.getAttribute("data-ver")) {
+      img = fig.querySelector('img[data-ver="' + dl.getAttribute("data-ver") + '"]');
+    }
+    if (!img) img = fig.querySelector("img");
+  }
+  if (!img) return;
+  name = img.getAttribute("data-name") || "figure.png";
+  saveBlob(new Blob([b64ToBytes(img.src.split(",")[1])], {type: "image/png"}), name);
+}
+
+/* 单图 PDF：按文件名从 PDFS 取。 */
+function dlPdf(btn) {
+  var name = btn.getAttribute("data-name"), b64 = PDFS[name];
+  if (!b64) return;
+  saveBlob(new Blob([b64ToBytes(b64)], {type: "application/pdf"}), name);
+}
+
+/* ---- 纯前端打 ZIP（store，不压缩）：不引第三方库，断网可用 ---- */
+var CRC_TABLE = null;
+function crc32(bytes) {
+  if (!CRC_TABLE) {
+    CRC_TABLE = new Uint32Array(256);
+    for (var n = 0; n < 256; n++) {
+      var c = n;
+      for (var k = 0; k < 8; k++) c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1);
+      CRC_TABLE[n] = c >>> 0;
+    }
+  }
+  var crc = 0xFFFFFFFF;
+  for (var i = 0; i < bytes.length; i++) {
+    crc = CRC_TABLE[(crc ^ bytes[i]) & 0xFF] ^ (crc >>> 8);
+  }
+  return (crc ^ 0xFFFFFFFF) >>> 0;
+}
+
+function makeZip(entries) {
+  var enc = new TextEncoder(), parts = [], central = [], offset = 0;
+  var d = new Date();
+  var dosTime = ((d.getHours() << 11) | (d.getMinutes() << 5) | (d.getSeconds() >> 1)) & 0xFFFF;
+  var dosDate = (((d.getFullYear() - 1980) << 9) | ((d.getMonth() + 1) << 5) | d.getDate()) & 0xFFFF;
+  entries.forEach(function (e) {
+    var name = enc.encode(e.name), data = e.bytes, crc = crc32(data);
+    var lh = new Uint8Array(30 + name.length), lv = new DataView(lh.buffer);
+    lv.setUint32(0, 0x04034b50, true);
+    lv.setUint16(4, 20, true);       /* version needed */
+    lv.setUint16(6, 0x0800, true);   /* UTF-8 文件名 */
+    lv.setUint16(8, 0, true);        /* 0 = store */
+    lv.setUint16(10, dosTime, true);
+    lv.setUint16(12, dosDate, true);
+    lv.setUint32(14, crc, true);
+    lv.setUint32(18, data.length, true);
+    lv.setUint32(22, data.length, true);
+    lv.setUint16(26, name.length, true);
+    lv.setUint16(28, 0, true);
+    lh.set(name, 30);
+    parts.push(lh, data);
+
+    var ch = new Uint8Array(46 + name.length), cv = new DataView(ch.buffer);
+    cv.setUint32(0, 0x02014b50, true);
+    cv.setUint16(4, 20, true);       /* version made by */
+    cv.setUint16(6, 20, true);
+    cv.setUint16(8, 0x0800, true);
+    cv.setUint16(10, 0, true);
+    cv.setUint16(12, dosTime, true);
+    cv.setUint16(14, dosDate, true);
+    cv.setUint32(16, crc, true);
+    cv.setUint32(20, data.length, true);
+    cv.setUint32(24, data.length, true);
+    cv.setUint16(28, name.length, true);
+    cv.setUint16(30, 0, true);       /* extra */
+    cv.setUint16(32, 0, true);       /* comment */
+    cv.setUint16(34, 0, true);       /* disk */
+    cv.setUint16(36, 0, true);       /* internal attrs */
+    cv.setUint32(38, 0, true);       /* external attrs */
+    cv.setUint32(42, offset, true);
+    ch.set(name, 46);
+    central.push(ch);
+    offset += lh.length + data.length;
+  });
+  var cdSize = central.reduce(function (s, c) { return s + c.length; }, 0);
+  var eocd = new Uint8Array(22), ev = new DataView(eocd.buffer);
+  ev.setUint32(0, 0x06054b50, true);
+  ev.setUint16(8, entries.length, true);
+  ev.setUint16(10, entries.length, true);
+  ev.setUint32(12, cdSize, true);
+  ev.setUint32(16, offset, true);
+  return new Blob(parts.concat(central, [eocd]), {type: "application/zip"});
+}
+
+/* 打包全部图件：PNG 取各 img 标签，PDF 取 PDFS，二者都已在页面内。 */
+function dlZip() {
+  var entries = [];
+  document.querySelectorAll("img[data-name]").forEach(function (img) {
+    entries.push({name: img.getAttribute("data-name"), bytes: b64ToBytes(img.src.split(",")[1])});
+  });
+  Object.keys(PDFS).forEach(function (name) {
+    entries.push({name: name, bytes: b64ToBytes(PDFS[name])});
+  });
+  if (!entries.length) return;
+  entries.sort(function (a, b) { return a.name < b.name ? -1 : (a.name > b.name ? 1 : 0); });
+  saveBlob(makeZip(entries), "figures_en.zip");
+}
 """
 
 
@@ -188,28 +331,33 @@ def _code_block(stem: str) -> str:
 
 
 def _dl_links(png: Path, stem: str) -> str:
-    """单图下载链接：PNG + 可选 PDF + 源文件说明。
+    """单图下载按钮：PNG + 可选 PDF，全部由页面内已有的 base64 现算。
 
-    一律用 ``figures/`` 相对路径，不用 ``data:`` 链接——后者保存下来会被
-    打上 Mark-of-the-Web，Windows 默认安全设置会拒绝打开。
+    不用 ``<a href="data:...">``——Chrome 会把 data: 链接的下载判为不安全下载
+    并直接拦掉（之前「下载按钮点不动」就是这个原因）；改成 ``<button>`` 触发
+    Blob 下载后，既不依赖 ``figures/`` 文件夹，落盘也不会被标记为网络文件。
     """
-    links = [f'<a download="{stem}.png" href="figures/{png.name}">下载 PNG（300 dpi）</a>']
+    links = ['<button type="button" class="dlbtn" onclick="dlImg(this)">'
+             "下载 PNG（300 dpi）</button>"]
     pdf = png.with_suffix(".pdf")
     if pdf.exists():
-        links.append(f'<a download="{stem}.pdf" href="figures/{pdf.name}">下载 PDF（矢量）</a>')
-    links.append(f'<span class="src">源文件：figures/{png.name} ｜ 代码：adsorp/viz.py</span>')
+        links.append(f'<button type="button" class="dlbtn" data-name="{stem}.pdf"'
+                     f' onclick="dlPdf(this)">下载 PDF（矢量）</button>')
+    links.append('<span class="src">已内嵌本文件 ｜ 代码：adsorp/viz.py</span>')
     return " · ".join(links)
 
 
 def _img(path: Path, caption: str, fname: str | None = None) -> str:
     """内嵌图片 + PNG/PDF 单图下载按钮 + 该图的绘图代码（可折叠）。
 
-    图片以 base64 内嵌，报告单独转发也能显示。
+    图片以 base64 内嵌（``data-name`` 供下载按钮取文件名），报告单独转发也能
+    显示与下载。
     """
     if not path.exists():
         return ""
     b64 = base64.b64encode(path.read_bytes()).decode()
-    return (f'<figure><img src="data:image/png;base64,{b64}" alt="{caption}">'
+    return (f'<figure><img data-name="{path.name}" '
+            f'src="data:image/png;base64,{b64}" alt="{caption}">'
             f"<figcaption>{caption}</figcaption>"
             f'<div class="dl">{_dl_links(path, fname or path.stem)}</div>'
             f"{_code_block(path.stem)}</figure>")
@@ -232,7 +380,7 @@ def _img_switch(fig_dir: Path, stem: str, alt_stem: str, caption: str) -> str:
         png = fig_dir / f"{st}.png"
         b64 = base64.b64encode(png.read_bytes()).decode()
         disp = "" if i == 0 else ' style="display:none"'
-        imgs.append(f'<img data-ax="{group}" data-ver="{ver}"{disp} '
+        imgs.append(f'<img data-ax="{group}" data-ver="{ver}" data-name="{st}.png"{disp} '
                     f'src="data:image/png;base64,{b64}" alt="{caption}">')
         dls.append(f'<div class="dl" data-ax="{group}" data-ver="{ver}"{disp}>'
                    f"{_dl_links(png, st)}</div>")
@@ -563,11 +711,14 @@ def write_html(out: Path, data, qc, iso_best, iso_fits, kin_best, kin_fits, ipd,
         if not png.exists():
             continue
         stems.append(stem)
-        links = f'<a href="figures/{stem}.png" download="{stem}.png">PNG</a>'
+        kb = png.stat().st_size / 1024
+        links = (f'<button type="button" class="dlbtn" data-name="{stem}.png"'
+                 f' onclick="dlImg(this)">PNG</button>')
         if pdf.exists():
-            links += f' · <a href="figures/{stem}.pdf" download="{stem}.pdf">PDF</a>'
+            links += (f' · <button type="button" class="dlbtn" data-name="{stem}.pdf"'
+                      f' onclick="dlPdf(this)">PDF</button>')
         rows.append(f"<tr><td>{no}</td><td>{title}</td><td>{links}</td>"
-                    f'<td class="src">figures/{stem}.png</td></tr>')
+                    f'<td class="src">已内嵌 · {kb:.0f} KB</td></tr>')
     zip_path = fig_dir / "figures_en.zip"
     if stems:
         with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as z:
@@ -576,30 +727,27 @@ def write_html(out: Path, data, qc, iso_best, iso_fits, kin_best, kin_fits, ipd,
             for f in sorted(fig_dir.iterdir()):
                 if f.suffix in (".png", ".pdf"):
                     z.write(f, f.name)
-    zip_link = ('<a href="figures/figures_en.zip" download="figures_en.zip">'
-                '打包下载全部图件（ZIP，PNG + PDF）</a>' if zip_path.exists() else "")
+    zip_link = ('<button type="button" class="dlbtn" onclick="dlZip()">'
+                "打包下载全部图件（ZIP，PNG + PDF）</button>" if stems else "")
     fig_section = f"""<h2>七、图件下载与源文件</h2>
-<p>每张图下方都有「下载 PNG / 下载 PDF」按钮，指向报告旁 <code>figures/</code> 文件夹里的同名文件
-（PNG 300 dpi + 矢量 PDF）。<strong>请将本报告与 figures 文件夹放在同一目录下保存或转发</strong>——
-图片本身以 base64 内嵌、单独转发 HTML 也能正常显示，但下载按钮需要 figures 文件夹在场。</p>
-<details><summary>下载的 PNG 双击打不开？（"Internet 安全设置阻止打开"）</summary>
-<p style="margin:6px 0 2px">文件<b>并没有损坏</b>：这是 Windows 的 Mark-of-the-Web 机制——
-浏览器会给"从网页下载"落盘的文件附加 Internet 区域标记，而系统的安全设置禁止直接打开带此标记的文件。
-三种解决办法任选：</p>
-<ol style="margin:6px 0 2px 22px">
-<li>右键该 PNG → <b>属性</b> → 常规页底部勾选<b>「解除锁定」</b> → 确定，之后即可正常打开；</li>
-<li>批量解除：PowerShell 执行 <code>Get-ChildItem "$env:USERPROFILE\\Downloads\\*.png" | Unblock-File</code>；</li>
-<li>直接使用 <code>output/figures/</code> 里的原图——它们由脚本直接写入磁盘，不带网络标记。</li>
-</ol>
-</details>
+<p>本报告是<b>单文件自包含</b>的：全部图件（PNG 300 dpi）与矢量版（PDF）都以 base64 内嵌在这个
+<code>.html</code> 里，下载按钮在浏览器内即时生成文件，<b>不读取任何外部路径</b>。
+复制、保存或转发这一个文件即可——不需要 <code>figures/</code> 文件夹，断网、换电脑、换浏览器
+都能正常显示与下载。</p>
 <table class="figlist">{"".join(rows)}</table>
 <p style="margin-top:12px">{zip_link}</p>
 <div class="note">图件为纯英文，可直接用于英文稿件；版式 17.2 cm 双栏、Times New Roman、四边细框、刻度朝内。
 生成代码见 <code>adsorp/viz.py</code>（绘图）与 <code>adsorp/style.py</code>（样式）；矿物英文名可在
-<code>names.json</code> 中修改，改完重跑即可。</div>"""
+<code>names.json</code> 中修改，改完重跑即可。数值表另存为 <code>结果汇总.xlsx</code> 与
+<code>tables/*.csv</code>，看图与下载图件都不依赖它们。</div>"""
 
     # 标题不写死体系与元素，任何吸附体系通用
     h1 = "数据分析报告：等温线、动力学与 pH 吸附边"
+
+    # 全部矢量图只内嵌一份（JSON），下载按钮按文件名取用，避免在多个按钮里重复存
+    pdfs = {p.name: base64.b64encode(p.read_bytes()).decode()
+            for p in sorted(fig_dir.glob("*.pdf"))}
+    pdf_json = json.dumps(pdfs, ensure_ascii=True)
 
     html = f"""<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8">
@@ -695,14 +843,8 @@ d(log Ce)/dpH 一项，而吸附边实验中 Ce 随 pH 变化显著，两组实�
 {fig_section}
 <div class="foot">本报告由 <code>python -m adsorp.cli run</code>（或 <code>run_analysis.py</code>）自动生成；所有数值表同时导出至
 <code>结果汇总.xlsx</code>，长表数据见 <code>tables/长表数据.csv</code>。</div>
-<script>
-function axSwitch(inp) {{
-  var g = inp.name.replace(/^ax_/, "");
-  document.querySelectorAll('[data-ax="' + g + '"]').forEach(function (el) {{
-    el.style.display = (el.getAttribute("data-ver") === inp.value) ? "" : "none";
-  }});
-}}
-</script>
+<script id="pdfdata" type="application/json">{pdf_json}</script>
+<script>{JS}</script>
 </div></body></html>"""
     path = out / "报告.html"
     path.write_text(html, encoding="utf-8")
