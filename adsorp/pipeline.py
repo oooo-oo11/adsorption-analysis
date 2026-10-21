@@ -18,7 +18,7 @@ import numpy as np
 import pandas as pd
 
 from . import analyze, names as N, report, viz
-from .io import read_all
+from .io import has_workbooks, read_all
 from .template import read_template
 
 BASE = Path(__file__).resolve().parent.parent
@@ -29,10 +29,26 @@ CACHE_KEYS = ["data", "qc", "eq", "ipd", "iso_fits", "iso_best", "curves_iso",
 
 
 def load_config(path: Path) -> dict:
-    cfg = {"solid_g_per_L": None, "data_dir": ".", "output_dir": "output", "defaults": {}}
+    cfg = {"solid_g_per_L": None, "data_dir": "data", "output_dir": "output", "defaults": {}}
     if path.exists():
         cfg.update(json.loads(path.read_text(encoding="utf-8")))
     return cfg
+
+
+def resolve_data_dir(cfg: dict, override: str | Path | None = None) -> Path:
+    """确定原始工作簿目录：``--data-dir`` > ``config.data_dir`` > 项目根。
+
+    未显式指定时，若配置目录里没有可识别的表，就回退项目根目录——这样
+    「把 Excel 直接丢进项目文件夹、双击 adsorp.bat」也能跑。
+    """
+    if override:
+        p = Path(override)
+        return (p if p.is_absolute() else Path.cwd() / p).resolve()
+    p = Path(cfg.get("data_dir") or "data")
+    p = (p if p.is_absolute() else BASE / p).resolve()
+    if has_workbooks(p) or not has_workbooks(BASE):
+        return p
+    return BASE
 
 
 def resolve_solid(cfg: dict, override: float | None) -> float | dict | None:
@@ -134,13 +150,19 @@ def run(*, data_dir: str | Path | None = None,
         if not isinstance(qc, pd.DataFrame) or qc.empty:
             qc = pd.DataFrame(columns=["exp", "qc", "nominal_ppb", "conc_ppb", "recovery_pct"])
     else:
-        data_dir = Path(data_dir or cfg.get("data_dir") or BASE).resolve()
+        data_dir = resolve_data_dir(cfg, data_dir)
         log(f"[1/5] 读取数据：{data_dir}")
         data, qc, _, io_warn = read_all(data_dir, cfg)
         cfg_t = {}
 
     if data.empty:
-        raise SystemExit("未解析到数据：请检查模板的 Data 表，或文件名是否包含 等温/动力学/吸附边。")
+        if template:
+            msg = f"未解析到数据：模板 {template} 的 Data 表是空的，或列名不匹配。"
+        else:
+            msg = ("未解析到数据：data/ 和项目根目录都没有可识别的表。\n"
+                   "  · 文件名需含 等温 / 动力学 / 吸附边（.xlsx）；\n"
+                   "  · 已整理的数据用 --template 指定模板（adsorp.bat template 可生成空白模板）。")
+        raise SystemExit(msg)
     log(f"      {len(data)} 行有效数据；QC {len(qc)} 条")
 
     log(f"[2/5] 计算 Ce / qe / 吸附分数")

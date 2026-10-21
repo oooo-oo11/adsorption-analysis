@@ -12,7 +12,7 @@
 # 进入项目目录（PowerShell）
 cd "C:\Users\Uers\Desktop\分析"
 
-# 方式 A：直接读 data/raw/ 里的 3 个 AFS 工作簿（既有流程）
+# 方式 A：把自己的工作簿放进 data\，直接跑（最常用）
 .\adsorp.bat run
 
 # 方式 B：读填好的 Excel 模板（推荐，含固液比等元数据）
@@ -24,6 +24,8 @@ cd "C:\Users\Uers\Desktop\分析"
 
 > `adsorp.bat` 会自动用项目虚拟环境的 Python，不依赖系统 PATH。
 > 如果已在终端激活该环境，`python -m adsorp.cli ...` 与 `.\adsorp.bat ...` 完全等价。
+
+方式 A 的命名约定：三类实验各一个 `.xlsx`，文件名分别含 **等温**、**动力学**、**吸附边**（只做一两类也可以）。数据放 `data\` 或直接放项目根目录都行——脚本先找 `data\`，找不到再回退根目录。详见 `data/README.md`。
 
 Windows 下也可以直接双击 `adsorp.bat`，或在 cmd 里省略 `.\`：
 
@@ -62,6 +64,8 @@ adsorp.bat run --template templates/吸附数据_已填示例.xlsx
 | `python -m adsorp.cli check --template 数据.xlsx` | 只校验：行数、分组、缺列、异常标记 |
 | `python -m adsorp.cli export --out 示例.xlsx` | 把当前已解析数据导出成"填好的模板" |
 | `python -m adsorp.cli matlab --verify` | 生成全模型复核脚本 `output/matlab_verify.m`（读拟合缓存，需先 run 一次） |
+
+> 省略子命令时默认执行 `run`：双击 `adsorp.bat`、或运行 `adsorp.bat --reuse`，都等价于在 `run` 后加参数。
 | `python -m adsorp.cli matlab` | 导出 MATLAB 可粘贴的 `Ce/qe` 数组（`output/matlab_isotherm.m`） |
 
 ### MATLAB 全模型复核
@@ -154,7 +158,7 @@ solid:Feroxyhyte            0.5
 
 `default_C0_*` 也可以不写，脚本会回退到 `config.json` 的 `defaults.kinetics.C0_ppm` / `defaults.edge.C0_ppm`。
 
-固液比取自 `docs/Mn-SbV实验.docx` 的预实验值；未列出的矿物按 mg/L(悬浮液) 处理，报告里会明确标注单位。
+`config.json` 里的示例固液比取自 `docs/Mn-SbV实验.docx` 的预实验值；换成自己的体系时请改 `config.json` 或模板 Settings。未列出的矿物按 mg/L(悬浮液) 处理，报告里会明确标注单位。
 
 **字体**：模板的西文/数字为 Times New Roman、中文为宋体（与出图一致）。字体只影响显示，脚本按单元格的值读取，改字体/字号/加粗都不影响任何计算。
 
@@ -228,7 +232,6 @@ AICc 而非 R² 用于选模型：多一个参数必然抬高 R²，AICc 会惩�
 ├─ config.json                ← 固液比 / 数据目录 / 默认稀释倍数
 ├─ names.json                 ← 矿物中英文名映射
 ├─ requirements.txt · pyproject.toml
-├─ tod.xlsx                   ← 当前主数据集（推荐用 --template 指定）
 │
 ├─ adsorp/                    ← 程序包：只放会被 import 的代码
 │  ├─ io.py                   仪器原始工作簿解析
@@ -250,9 +253,8 @@ AICc 而非 R² 用于选模型：多一个参数必然抬高 R²，AICc 会惩�
 │  ├─ figures/                PNG + PDF + figures_en.zip
 │  └─ tables/                 11 个 CSV
 │
-├─ data/
-│  ├─ raw/                    ← 仪器原始工作簿（3 个 AFS 表，tod.xlsx 的来源）
-│  └─ tod-去除异常点.xlsx      ← 敏感性对比用数据集
+├─ data/                     ← 输入数据：放这里，或直接放项目根目录
+│  └─ README.md              命名约定与投放说明
 │
 ├─ templates/
 │  ├─ 吸附数据模板.xlsx        ← 空白模板（adsorp.bat template 生成于此）
@@ -275,7 +277,7 @@ AICc 而非 R² 用于选模型：多一个参数必然抬高 R²，AICc 会惩�
 └─ .workbuddy/                编辑器会话数据（不参与版本管理）
 ```
 
-根目录只有 8 个文件 + 6 个目录：入口（`README` / `adsorp.bat` / `run_analysis.py`）、配置（`config.json` / `names.json` / `requirements.txt` / `pyproject.toml`）、主数据（`tod.xlsx`），以及 `adsorp` `output` `data` `templates` `docs` `_archive`。
+根目录只有 7 个文件 + 6 个目录：入口（`README` / `adsorp.bat` / `run_analysis.py`）、配置（`config.json` / `names.json` / `requirements.txt` / `pyproject.toml`），以及 `adsorp` `output` `data` `templates` `docs` `_archive`。
 
 ### 7.1 归类规则：新文件该放哪
 
@@ -283,7 +285,7 @@ AICc 而非 R² 用于选模型：多一个参数必然抬高 R²，AICc 会惩�
 |---|---|---|
 | 会被 `import` 的 .py | `adsorp/` | 在调用链上，删了会报 ImportError |
 | 回退/对照用的旧 .py | `_archive/code/` | 没有任何文件 import 它 |
-| 新的仪器原始工作簿 | `data/raw/` | 文件名含「等温 / 动力学 / 吸附边」 |
+| 新的仪器原始工作簿 | `data/` | 文件名含「等温 / 动力学 / 吸附边」 |
 | 单份待分析数据 | 根目录或 `data/` 均可 | 用 `--template` 显式给路径 |
 | 空白模板、填好的示例 | `templates/` | `template`、`export` 的默认输出位置 |
 | 方案、审查、核查、说明 | `docs/` | 只给人看，不参与运行 |
@@ -308,12 +310,12 @@ AICc 而非 R² 用于选模型：多一个参数必然抬高 R²，AICc 会惩�
 
 ```bat
 cd /d C:\Users\Uers\Desktop\分析
-adsorp.bat check --template tod.xlsx     :: 1. 先校验，几秒
-adsorp.bat run  --template tod.xlsx      :: 2. 出结果，约 35 秒
-start output\报告.html                    :: 3. 看报告
+adsorp.bat run                    :: 1. 读 data/ 出结果，约 35 秒
+start output\报告.html            :: 2. 看报告
+adsorp.bat run --reuse            :: 3. 调图版式：只重绘，不重拟合
 ```
 
-换新数据：把工作簿放进 `data/raw/`（同名旧文件先挪走，脚本只取每类第一个并给出提示），或存成模板后用 `--template 路径` 指定。
+换新数据：把工作簿放进 `data/` 或项目根目录（同类有多个文件时只取文件名第一个并给出提示），或存成模板后用 `--template 路径` 指定。
 
 ---
 

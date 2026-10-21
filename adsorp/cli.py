@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from .pipeline import BASE, load_config, resolve_solid, run
+from .pipeline import BASE, load_config, resolve_data_dir, resolve_solid, run
 from .io import read_all
 from .template import read_template, write_from_data, write_template
 
@@ -25,7 +25,7 @@ def _load_source(a):
         data, cfg_t, _ = read_template(a.template)
         return data, cfg_t.get("solids_g_per_L")
     cfgf = load_config(Path(a.config))
-    data, _, _, _ = read_all(Path(a.data_dir or cfgf.get("data_dir") or "."), cfgf)
+    data, _, _, _ = read_all(resolve_data_dir(cfgf, a.data_dir), cfgf)
     return data, resolve_solid(cfgf, None)
 
 
@@ -164,6 +164,11 @@ def _cmd_check(a) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    argv = list(sys.argv[1:] if argv is None else argv)
+    # 双击 adsorp.bat（无参数），或只给选项（如 --reuse）时，默认跑 run。
+    if not argv or argv[0].startswith("-"):
+        argv = ["run"] + argv
+
     ap = argparse.ArgumentParser(prog="adsorp", description="吸附数据分析流水线")
     sub = ap.add_subparsers(dest="cmd", required=True)
 

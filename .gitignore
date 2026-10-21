@@ -13,5 +13,11 @@ output_verify/
 # Excel 临时文件
 ~$*
 
+# 自己的实验数据不入库（模板 templates/ 与历史的 output/ 不受影响）
+/data/*.xlsx
+/data/*.xls
+/*.xlsx
+/*.xls
+
 # 本地工作目录（WorkBuddy 会话数据）
 .workbuddy/

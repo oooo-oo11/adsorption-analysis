@@ -45,6 +45,21 @@ MINERAL_DISPLAY = {
 # 可在 config.json 里写 {"legacy": {"background_salts": ["NaCl", "CaCl2"]}}。
 DEFAULT_SALTS = ("NaNO3", "NaNO₃")
 
+# 仪器工作簿的命名约定：三类实验各取一个 .xlsx，文件名含关键词即可。
+# 不按这个约定命名的数据，请先整理成模板再用 --template 指定。
+WORKBOOK_PATTERNS = {
+    "isotherm": "*等温*.xlsx",
+    "kinetics": "*动力学*.xlsx",
+    "edge": "*吸附边*.xlsx",
+}
+
+
+def has_workbooks(data_dir: Path) -> bool:
+    """目录顶层是否存在可识别的仪器工作簿（不递归子目录）。"""
+    # 注意：不能写 any(dir.glob(p) for p in ...) —— 元素是 glob 生成器对象，
+    # 恒为真；要逐条 any 到实际路径。
+    return any(any(data_dir.glob(pat)) for pat in WORKBOOK_PATTERNS.values())
+
 # 仪器表头里"初始浓度"与"总稀释倍数"的标签。换元素后表头常写成
 # "初始 As/ppm" 之类，用列表容忍多种写法。
 C0_LABELS = ("初始 Sb/ppm", "初始浓度/ppm", "初始浓度")
@@ -311,11 +326,7 @@ def read_all(data_dir: Path, cfg: dict):
     salts = (cfg.get("legacy") or {}).get("background_salts")
     if salts:
         set_background_salts(salts)
-    files = {
-        "isotherm": sorted(data_dir.glob("*等温*.xlsx")),
-        "kinetics": sorted(data_dir.glob("*动力学*.xlsx")),
-        "edge": sorted(data_dir.glob("*吸附边*.xlsx")),
-    }
+    files = {exp: sorted(data_dir.glob(pat)) for exp, pat in WORKBOOK_PATTERNS.items()}
     frames, qcs, metas, warnings = [], [], {}, []
     for exp, paths in files.items():
         if not paths:
