@@ -96,14 +96,20 @@ def _metrics(y, yhat, p) -> dict:
     are = float(np.nanmean(rel) * 100) if np.isfinite(rel).any() else np.nan
     mpsd = float(100 * np.sqrt(np.nansum((resid / y) ** 2) / dof)) if dof > 0 else np.nan
 
-    if ssr > 0 and n > 0:
+    if np.isfinite(ssr) and ssr > 0:
         aic = n * np.log(ssr / n) + 2 * p
         if n - p - 1 > 0:
             aicc = aic + 2 * p * (p + 1) / (n - p - 1)
         else:
             aicc = np.inf
+    elif np.isfinite(ssr):
+        # 零残差＝完美插值，AICc 理论上是 −∞，排序时自然排第一
+        aic = aicc = -np.inf
     else:
-        aic = aicc = -1e12  # 完美拟合
+        # SSR 为 NaN/inf（拟合给出的预测里有非有限值）：AICc 不可用。
+        # 过去这里赋 −1e12 当「完美拟合」，结果 NaN 反而被排到第一，
+        # 现在是 NaN——排序时垫底，且 best_result 会把它排除。
+        aic = aicc = np.nan
 
     return dict(ssr=ssr, r2=r2, adj_r2=adj, rmse=rmse, chi2=chi2,
                 are=are, mpsd=mpsd, aic=aic, aicc=aicc)
@@ -216,14 +222,25 @@ def fit_many(models: dict[str, Model], x, y, n_starts: int = 40, seed: int = 0):
     return results
 
 
+def _aicc_key(v: float) -> float:
+    """AICc 排序键：NaN 垫底，+inf（自由度耗尽）也垫底，−inf（零残差）排最前。
+
+    不能直接用 ``np.isfinite`` 过滤——那会把 −inf 和 NaN 一起当成"最差"，
+    而 −inf 恰恰是最好的情形。
+    """
+    return np.inf if (v is None or np.isnan(v)) else float(v)
+
+
 def rank(results: list[FitResult]) -> list[FitResult]:
     """按 AICc 排序；AICc 相同时 RMSE 小者优先。"""
-    return sorted(results, key=lambda r: (np.inf if not np.isfinite(r.aicc) else r.aicc,
-                                          np.inf if not np.isfinite(r.rmse) else r.rmse))
+    return sorted(results, key=lambda r: (_aicc_key(r.aicc), _aicc_key(r.rmse)))
 
 
 def best_result(results: list[FitResult]) -> FitResult | None:
     if not results:
         return None
-    good = [r for r in results if r.converged and np.isfinite(r.aicc)]
+    # aicc 为 NaN 或 +inf 的模型不能当"最优"：前者指标算不出来，
+    # 后者自由度不足（n−p−1 ≤ 0），二者都没有可比性。
+    good = [r for r in results
+            if r.converged and not np.isnan(r.aicc) and r.aicc != np.inf]
     return rank(good)[0] if good else None

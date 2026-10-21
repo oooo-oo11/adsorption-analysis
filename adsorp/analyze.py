@@ -51,6 +51,39 @@ def _unit(solid):
     return "mg/L(悬浮液)" if not solid else "mg/g"
 
 
+def _solid_series(df: pd.DataFrame, solid) -> pd.Series:
+    """逐行固液比 m/V：**行内值优先**，为空才回退 Settings / 矿物映射。
+
+    模板里逐行填的 ``solid_g_per_L`` 是这一行真实的 m/V，比 Settings 里
+    按矿物给的单值更具体。两者的优先级若写反（Settings 覆盖行内值），
+    表内写 2、Settings 写 1 时 qe 会整整放大一倍，且报告里看不出来。
+    """
+    fallback = pd.Series([_solid_for(solid, m) for m in df["mineral"]],
+                         index=df.index, dtype="float")
+    if "solid_g_per_L" not in df:
+        return fallback
+    row = pd.to_numeric(df["solid_g_per_L"], errors="coerce")
+    return row.where(row > 0).fillna(fallback)
+
+
+def _group_unit(g: pd.DataFrame, col: str, solid) -> tuple[str, str]:
+    """组内统一的容量单位；返回 ``(单位, 混用提示或空串)``。
+
+    同一组里若部分行有 m/V、部分没有，整组会被拆成 mg/g 与 mg/L(悬浮液)
+    两种口径，曲线不能横向比较。过去取第一行的单位当整组标签，等于把
+    另一口径的数据也标称成它，读者无从察觉。
+    """
+    if col not in g:
+        return _unit(solid), ""
+    vals = [str(v) for v in g[col].dropna().unique()]
+    if len(vals) == 1:
+        return vals[0], ""
+    if len(vals) > 1:
+        return "mixed", ("组内容量单位不一致（部分行有固液比、部分没有），"
+                         "已混用 mg/g 与 mg/L(悬浮液)，该组曲线不可横向比较。")
+    return _unit(solid), ""
+
+
 def _split_excluded(g: pd.DataFrame):
     """拆成（参与拟合的行, 被 exclude 标记的行, 剔除数）。
 
@@ -63,8 +96,10 @@ def _split_excluded(g: pd.DataFrame):
 
 
 # 三类实验：(字段名, 显示名, 独立条件列, 最少点数)
+# 等温线 4 点即可拟合双参数模型（fit_model 的门槛是 n ≥ p+2，dof=2）；
+# 过去一刀切要求 5 点，把 4 点的低浓度序列整体拒之门外。
 EXP_SPECS = (
-    ("isotherm", "等温线", "C0_ppm", 5),
+    ("isotherm", "等温线", "C0_ppm", 4),
     ("kinetics", "动力学", "time_h", 5),
     ("edge", "吸附边", "pH", 4),
 )
@@ -96,9 +131,7 @@ def isotherm_data(data: pd.DataFrame, solid: float | dict | None) -> pd.DataFram
     df = data[data.exp == "isotherm"].copy()
     df = df[np.isfinite(df["C0_ppm"]) & np.isfinite(df["Ce_ppm"]) & (df["C0_ppm"] > 0)]
     df["removal_pct"] = 100.0 * (1.0 - df["Ce_ppm"] / df["C0_ppm"])
-    df["solid_g_per_L"] = pd.to_numeric(
-        pd.Series([_solid_for(solid, m) for m in df["mineral"]], index=df.index),
-        errors="coerce")
+    df["solid_g_per_L"] = _solid_series(df, solid)
     removed = df["C0_ppm"] - df["Ce_ppm"]
     has_solid = df["solid_g_per_L"].notna()
     df["qe"] = np.where(has_solid, removed / df["solid_g_per_L"], removed)
@@ -127,7 +160,9 @@ def analyze_isotherms(df: pd.DataFrame, solid: float | None):
                       qe_sd=("qe", "std"),
                       removal_pct=("removal_pct", "mean"), n_rep=("qe", "size")))
         agg = agg.sort_values("C0_ppm")
-        unit = str(g["qe_unit"].iloc[0]) if "qe_unit" in g else _unit(solid)
+        unit, unit_warn = _group_unit(g, "qe_unit", solid)
+        if unit_warn:
+            warns.append(f"{mineral}-{background}：{unit_warn}")
 
         # 单调性诊断
         rem = agg["removal_pct"].to_numpy()
@@ -150,8 +185,9 @@ def analyze_isotherms(df: pd.DataFrame, solid: float | None):
         # 这条限制在 fit.fit_model 内部执行，并把跳过的点数回报上来，
         # 报告里会写明"m 点因定义域限制未参与拟合"。
         fit_agg = agg[np.isfinite(agg["qe"]) & np.isfinite(agg["Ce_ppm"])]
-        if len(fit_agg) < 5:
-            warns.append(f"{mineral}-{background}：有效点数 {len(fit_agg)} < 5，未拟合。")
+        if len(fit_agg) < 4:
+            warns.append(f"{mineral}-{background}：有效点数 {len(fit_agg)} < 4，未拟合"
+                         "（双参数模型至少需要 4 点才能给出自由度）。")
             continue
 
         results = fit_many(ISOTHERM_MODELS, fit_agg["Ce_ppm"], fit_agg["qe"], n_starts=36)
@@ -203,9 +239,7 @@ def kinetics_data(data: pd.DataFrame, solid: float | dict | None) -> pd.DataFram
     df = data[data.exp == "kinetics"].copy()
     df = df[np.isfinite(df["time_h"]) & np.isfinite(df["removal_pct"])]
     df["U"] = df["removal_pct"] / 100.0
-    df["solid_g_per_L"] = pd.to_numeric(
-        pd.Series([_solid_for(solid, m) for m in df["mineral"]], index=df.index),
-        errors="coerce")
+    df["solid_g_per_L"] = _solid_series(df, solid)
     has_solid = df["solid_g_per_L"].notna()
     q = df["U"] * df["C0_ppm"]
     df["qt"] = np.where(has_solid, q / df["solid_g_per_L"], q)
@@ -251,7 +285,9 @@ def analyze_kinetics(df: pd.DataFrame, solid: float | None):
                  .agg(U=("U", "mean"), U_sd=("U", "std"), n_rep=("U", "size"),
                       qt=("qt", "mean"), qt_sd=("qt", "std")))
         agg = agg.sort_values("time_h")
-        unit = str(g["qt_unit"].iloc[0]) if "qt_unit" in g else _unit(solid)
+        unit, unit_warn = _group_unit(g, "qt_unit", solid)
+        if unit_warn:
+            warns.append(f"{mineral}-{background}：{unit_warn}")
         if len(agg) < 5:
             warns.append(f"{mineral}-{background}：时间点不足 5 个，未拟合。")
             continue
@@ -340,6 +376,12 @@ def equilibrium_time(df: pd.DataFrame) -> pd.DataFrame:
 # --------------------------------------------------------------------------
 
 def _logistic(ph, bottom, top, ph50, w):
+    """四参数 logistic 吸附边。
+
+    ``bottom`` 是 **pH→+∞ 的平台**（高 pH 平台），``top`` 是 **pH→−∞ 的平台**
+    （低 pH 平台）。两个名字容易被读成"上/下"而以为 bottom 是小值，实际
+    取决于曲线是下降边还是上升边——阳离子吸附通常随 pH 上升，此时 bottom>top。
+    """
     return bottom + (top - bottom) / (1.0 + np.exp((ph - ph50) / w))
 
 
@@ -348,22 +390,6 @@ def edge_data(data: pd.DataFrame) -> pd.DataFrame:
     df = df[np.isfinite(df["pH"]) & np.isfinite(df["removal_pct"])]
     df["theta"] = df["removal_pct"] / 100.0
     return df
-
-
-def _edge_hint(delta: float, direction: str) -> str:
-    """把"差多少"与"往哪个方向差"合成一句可用的结论。
-
-    曲线交叉时不能再说"整体更强/更弱"——两条边在不同 pH 段走向相反，
-    单一 pH50 排序会给出错误结论，这一点必须显式写出来。
-    """
-    if not np.isfinite(delta):
-        return "无法比较"
-    if delta < 5:
-        return "差异小 → 以内圈络合为主（仍需光谱证据）"
-    if "交叉" in str(direction) or "不一致" in str(direction):
-        return "曲线交叉 → 机理随 pH 改变，不能以单一 pH50 排序；建议逐 pH 比较并核查批次"
-    stronger = "更强" if "更高" in str(direction) else "更弱"
-    return f"差异显著 → 该离子强度下吸附整体{stronger}，符合静电/离子交换竞争，需光谱或表面络合模型佐证"
 
 
 def analyze_edges(df: pd.DataFrame):
@@ -389,9 +415,16 @@ def analyze_edges(df: pd.DataFrame):
 
         x = agg["pH"].to_numpy(float)
         y = agg["theta"].to_numpy(float)
-        p0 = [max(min(y.min(), 0.0), -0.05), max(y.max(), 0.5), np.median(x), 1.0]
-        lo = [-0.3, 0.0, 2.0, 0.05]
-        hi = [0.5, 1.5, 12.0, 10.0]
+        # 初值按"低 pH 端 → top、高 pH 端 → bottom"给，上升边与下降边都能起步：
+        # 过去把 bottom 固定成 y.min()、上界卡在 0.5，递增型吸附边（阳离子
+        # 常见形态）根本无法表达，会被硬压成一条错误的下降曲线。
+        n_edge = max(1, len(x) // 4)
+        order = np.argsort(x)
+        low_ph = float(np.median(y[order[:n_edge]]))    # pH 低端 → top
+        high_ph = float(np.median(y[order[-n_edge:]]))  # pH 高端 → bottom
+        p0 = [high_ph, low_ph, float(np.median(x)), 1.0]
+        lo = [-0.3, -0.2, 2.0, 0.05]
+        hi = [1.2, 1.5, 12.0, 10.0]
         try:
             popt, pcov = curve_fit(_logistic, x, y, p0=p0, bounds=(lo, hi),
                                    maxfev=50000, loss="soft_l1", f_scale=0.05)
@@ -415,13 +448,30 @@ def analyze_edges(df: pd.DataFrame):
             outliers, n_out = "", 0
             warns.append(f"{mineral}-{background}：logistic 拟合失败，仅输出原始曲线。")
 
-        # log Kd ~ pH 斜率（10–90% 吸附窗口）
-        win = agg[(agg["theta"] > 0.10) & (agg["theta"] < 0.90)]
+        # log Kd–pH 斜率（10–90% 吸附窗口）。
+        # 用逐点 Kd = (C0−Ce)/Ce，而不是 θ/(1−θ)：Langmuir 下
+        #   log[θ/(1−θ)] = log K + log Ce
+        # 对 pH 求导会多出 d(log Ce)/dpH 一项，而吸附边实验中 Ce 随 pH
+        # 显著变化，这一项不可忽略（实测两组差 2.1–2.5 倍的斜率）。
+        kdf = g[np.isfinite(g["C0_ppm"]) & np.isfinite(g["Ce_ppm"])
+                & (g["Ce_ppm"] > 0) & (g["C0_ppm"] > 0)]
+        kdf = kdf.assign(Kd=(kdf["C0_ppm"] - kdf["Ce_ppm"]) / kdf["Ce_ppm"])
+        win = kdf[(kdf["theta"] > 0.10) & (kdf["theta"] < 0.90) & (kdf["Kd"] > 0)]
         if len(win) >= 3:
-            lr = linregress(win["pH"], np.log10(win["theta"] / (1 - win["theta"])))
+            lr = linregress(win["pH"], np.log10(win["Kd"]))
             kd_slope, kd_r2 = lr.slope, lr.rvalue ** 2
+            kd_n = int(len(win))
         else:
             kd_slope = kd_r2 = np.nan
+            kd_n = int(len(win))
+            warns.append(f"{mineral}-{background}：10–90% 吸附窗口内只有 {kd_n} 个可用点"
+                         "（需 C0、Ce 均有效且 Ce>0），log Kd–pH 斜率未计算。")
+
+        reliable = bool(ok and np.isfinite(r2) and r2 >= 0.60)
+        # bottom 是高 pH 平台、top 是低 pH 平台。bottom>top 说明高 pH 端吸附更多，
+        # 也就是吸附随 pH 上升——阳离子吸附的常见形态。
+        direction = ("上升边（高 pH 吸附更强）" if ok and bottom > top
+                     else "下降边（高 pH 吸附更弱）" if ok else "")
 
         rows.append({
             "mineral": mineral, "background": background,
@@ -429,24 +479,31 @@ def analyze_edges(df: pd.DataFrame):
             "n_points": len(agg), "n_excluded": n_excluded,
             "pH_range": f"{x.min():g}–{x.max():g}",
             "theta_min": float(y.min()), "theta_max": float(y.max()),
-            "pH50": float(ph50), "pH50_SE": float(perr[2]) if ok else np.nan,
-            "edge_width": float(w), "slope_at_pH50": float(slope),
-            "plateau_high": float(top) if ok else np.nan,
-            "plateau_low": float(bottom) if ok else np.nan,
+            # pH50 与两个平台值只有 R²≥0.60 时才输出：拟合不成立时给出一个
+            # "看起来精确"的数字，比留空更危险。R² 与 fit_ok 保留供诊断。
+            "pH50": float(ph50) if reliable else np.nan,
+            "pH50_SE": float(perr[2]) if reliable else np.nan,
+            "edge_width": float(w) if reliable else np.nan,
+            "slope_at_pH50": float(slope) if reliable else np.nan,
+            # _logistic 里 pH→+∞ 趋于 bottom、pH→−∞ 趋于 top（过去写反了）
+            "plateau_high": float(bottom) if reliable else np.nan,
+            "plateau_low": float(top) if reliable else np.nan,
+            "edge_direction": direction,
             "R2_logistic": float(r2),
             "logKd_slope": float(kd_slope), "logKd_R2": float(kd_r2),
+            "logKd_n": kd_n,
             "n_outlier": n_out, "outlier_pH": outliers,
-            "fit_ok": ok, "reliable": bool(ok and np.isfinite(r2) and r2 >= 0.60),
+            "fit_ok": ok, "reliable": reliable,
         })
         if ok and n_out:
             warns.append(f"{mineral}-{background}：pH {outliers} 偏离 logistic 趋势超过 15 个百分点，"
                          "建议复核该点。")
-        if not (ok and np.isfinite(r2) and r2 >= 0.60):
-            warns.append(f"{mineral}-{background}：吸附边 logistic 拟合 R²={r2:.2f}，"
-                         "曲线无清晰 S 形，pH50 不宜引用。")
+        if not reliable:
+            warns.append(f"{mineral}-{background}：吸附边 logistic 拟合 R²={r2:.2f} < 0.60，"
+                         "曲线无清晰 S 形，pH50 与两个平台值均未输出。")
         curves[(mineral, background)] = {"data": agg, "popt": popt if ok else None,
                                               "ok": ok, "r2": float(r2),
-                                              "reliable": bool(ok and np.isfinite(r2) and r2 >= 0.60)}
+                                              "reliable": reliable}
 
     # 离子强度对比
     minerals = {}
@@ -480,6 +537,9 @@ def analyze_edges(df: pd.DataFrame):
                 if "交叉" in direction:
                     warns.append(f"{mineral}（{b1} vs {b2}）：吸附边曲线交叉，不能用单一 pH50 排序，"
                                  "建议逐 pH 比较并核查测定批次。")
+                # 只给事实：差多少、往哪个方向差。机理解读（"内圈络合""静电竞争"）
+                # 一律不写——脚本无法保证对每个体系都描述准确，交叉也可能只是
+                # 批次波动，把它写成机理结论会误导。
                 compare.append({
                     "mineral": mineral, "pair": f"{b1} vs {b2}",
                     "overlap_pH": f"{lo:g}–{hi:g}",
@@ -488,11 +548,7 @@ def analyze_edges(df: pd.DataFrame):
                     "direction": direction,
                 })
 
-    cmp_df = pd.DataFrame(compare)
-    if not cmp_df.empty:
-        cmp_df["hint"] = [_edge_hint(d, s) for d, s in
-                          zip(cmp_df["max_delta_theta_pct"], cmp_df["direction"])]
-    return pd.DataFrame(rows), curves, cmp_df, warns
+    return pd.DataFrame(rows), curves, pd.DataFrame(compare), warns
 
 
 # --------------------------------------------------------------------------

@@ -219,27 +219,30 @@ def _img_switch(fig_dir: Path, stem: str, alt_stem: str, caption: str) -> str:
     """带横坐标切换的图：``stem``＝默认线性版，``alt_stem``＝对数版。
 
     两版 PNG/PDF 都以 base64 内嵌，单选按钮切换显示；下载链接跟随所选版本。
-    任何一个版本文件缺失时自动跳过，两版都缺则返回空串。
+    选项**只按实际存在的版本生成**：对数版可能因为 Ce 或 t 全为 0 而没有画出
+    （见 viz._curves），此时若仍渲染"对数"按钮，点一下两张图都会被隐藏，
+    页面变成空白。
     """
     group = stem
-    imgs, dls = [], []
-    for ver, st in (("lin", stem), ("log", alt_stem)):
+    avail = [(v, s, lab) for v, s, lab in
+             (("lin", stem, "线性"), ("log", alt_stem, "对数"))
+             if (fig_dir / f"{s}.png").exists()]
+    imgs, dls, radios = [], [], []
+    for i, (ver, st, label) in enumerate(avail):
         png = fig_dir / f"{st}.png"
-        if not png.exists():
-            continue
         b64 = base64.b64encode(png.read_bytes()).decode()
-        disp = "" if ver == "lin" else ' style="display:none"'
+        disp = "" if i == 0 else ' style="display:none"'
         imgs.append(f'<img data-ax="{group}" data-ver="{ver}"{disp} '
                     f'src="data:image/png;base64,{b64}" alt="{caption}">')
         dls.append(f'<div class="dl" data-ax="{group}" data-ver="{ver}"{disp}>'
                    f"{_dl_links(png, st)}</div>")
+        radios.append(f'<label><input type="radio" name="ax_{group}" value="{ver}"'
+                      f'{" checked" if i == 0 else ""} '
+                      f'onchange="axSwitch(this)">{label}</label>')
     if not imgs:
         return ""
-    switch = (f'<div class="axswitch"><b>横坐标：</b>'
-              f'<label><input type="radio" name="ax_{group}" value="lin" checked '
-              f'onchange="axSwitch(this)">线性</label>'
-              f'<label><input type="radio" name="ax_{group}" value="log" '
-              f'onchange="axSwitch(this)">对数</label></div>')
+    switch = (f'<div class="axswitch"><b>横坐标：</b>{"".join(radios)}</div>'
+              if len(avail) > 1 else "")
     return (f'<figure>{switch}{"".join(imgs)}'
             f"<figcaption>{caption}</figcaption>"
             f'{"".join(dls)}{_code_block(stem)}</figure>')
@@ -285,7 +288,15 @@ def _audit_summary(audit: pd.DataFrame) -> pd.DataFrame:
 
 
 def _param_text(row, model) -> str:
-    """把一个模型的所有参数写成 'name = 值 ± SE 单位'，逐行用 <br> 分隔。"""
+    """把一个模型的所有参数写成 'name = 值 ± SE 单位'，逐行用 <br> 分隔。
+
+    容量参数的单位在模型定义里是占位符 ``{q}``：同一模型在不同组可能记
+    mg/g（有 m/V）或 mg/L(悬浮液)（没有），参数表却按组呈现——所以单位
+    必须用**这一行**的 qe_unit 渲染，而不是照抄模型级的"mg/g 或 mg/L"。
+    """
+    q_unit = row.get("qe_unit") or row.get("qt_unit") or ""
+    if not isinstance(q_unit, str) or q_unit == "mixed":
+        q_unit = "mg/g 或 mg/L(悬浮液)"
     parts = []
     for name, unit in zip(model.names, model.unit_hint):
         v = row.get(f"par_{name}")
@@ -296,10 +307,17 @@ def _param_text(row, model) -> str:
         if se is not None and pd.notna(se) and np.isfinite(se) and se > 0:
             txt += f" ± {_fmt(se)}"
         if unit and unit != "—":
-            txt += f" {unit}"
+            txt += f" {unit.format(q=q_unit) if '{q}' in unit else unit}"
         parts.append(txt)
     if model.key == "dr" and pd.notna(row.get("par_K_DR")):
         parts.append(f"E = {1.0 / np.sqrt(2.0 * max(float(row['par_K_DR']), 1e-30)):.2f} kJ/mol")
+    # Temkin 的 B=RT/b_T，b_T 本身不参与拟合，但 README 里提到它依赖温度，
+    # 这里按本次温度换算出来，免得"说了依赖 T 却从不给值"。
+    if model.key == "temkin" and pd.notna(row.get("par_B")):
+        from .models import R_GAS, DR_CONTEXT
+        b = float(row["par_B"])
+        if b > 0:
+            parts.append(f"b_T = {R_GAS * DR_CONTEXT['temperature'] / b:.3g} J/mol")
     return "<br>".join(parts)
 
 
@@ -354,25 +372,34 @@ def _all_param_rows(fits: pd.DataFrame, exp: str) -> pd.DataFrame:
 
 
 def _model_legend_table() -> pd.DataFrame:
-    """模型清单：名称、方程、参数与单位。"""
+    """模型清单：名称、方程、参数与单位。
+
+    这里是**模型级**说明，容量单位保留"mg/g 或 mg/L"二选一的写法；
+    参数表（``_param_text``）才按组渲染成确定的单位。
+    """
     from .models import ISOTHERM_MODELS, KINETIC_MODELS
 
     rows = []
     for kind, lib in (("等温线", ISOTHERM_MODELS), ("动力学", KINETIC_MODELS)):
         for m in lib.values():
-            unit = "；".join(f"{n} ({u})" if u and u != "—" else n
-                            for n, u in zip(m.names, m.unit_hint))
+            unit = "；".join(
+                f"{n} ({u.format(q='mg/g 或 mg/L(悬浮液)') if '{q}' in u else u})"
+                if u and u != "—" else n
+                for n, u in zip(m.names, m.unit_hint))
             rows.append({"类别": kind, "模型": m.label, "方程": m.formula, "参数与单位": unit})
     return pd.DataFrame(rows)
 
 
 def write_html(out: Path, data, qc, iso_best, iso_fits, kin_best, kin_fits, ipd,
                edge_params, edge_cmp, curves_iso, curves_kin,
-               solid, audit=None, issues=None):
+               solid, audit=None, issues=None, warns=None, dr_ctx=None):
     fig_dir = out / "figures"
     n_issue = 0 if issues is None or issues.empty else len(issues)
+    # "有效数据点"按真正参与计算的点数算：整行有记录但 Ce 为空（没测/已删）
+    # 的那些行不进任何拟合，算进去会让 KPI 比实际多出几行。
+    n_valid = int(data["Ce_ppm"].notna().sum()) if "Ce_ppm" in data else len(data)
     kpis = [
-        (len(data), "有效数据点"),
+        (n_valid, "有效数据点"),
         (len(iso_best) if not iso_best.empty else 0, "等温线样品组"),
         (len(kin_best) if not kin_best.empty else 0, "动力学样品组"),
         (edge_params["mineral"].nunique() if not edge_params.empty else 0, "吸附边矿物"),
@@ -380,8 +407,18 @@ def write_html(out: Path, data, qc, iso_best, iso_fits, kin_best, kin_fits, ipd,
     ]
     kpi_html = "".join(f'<div class="kpi"><b>{v}</b><span>{k}</span></div>' for v, k in kpis)
 
-    # 规则生成的解读性文字不再进入报告：脚本无法保证对每个体系都描述准确，
-    # 这类信息只在控制台摘要（_print_summary）里给出，报告只保留数据表。
+    # 组级提示必须进报告：过去它们只打印在控制台，而报告才是交付物——
+    # "ASW 这组动力学 R² 最高仅 0.03、不宜报告 qe/k" 这类结论在 HTML 里
+    # 根本搜不到，等于最关键的一条判断从交付物里消失了。
+    warn_list = [str(w).strip() for w in (warns or []) if str(w).strip()]
+    warns_html = ""
+    if warn_list:
+        items = "".join(f"<li>{_html.escape(w)}</li>" for w in warn_list)
+        warns_html = (
+            f'<details open><summary>分析提示（{len(warn_list)} 条）</summary>'
+            '<div class="warn"><p style="margin:0 0 6px">以下为脚本对数据可行性与拟合质量的'
+            "自动判断，<b>不改变任何实测值</b>；逐点可疑值另见下方的数据质量清单。</p>"
+            f"<ul>{items}</ul></div></details>")
 
     issues_html = ""
     if issues is not None and not issues.empty:
@@ -461,10 +498,24 @@ def write_html(out: Path, data, qc, iso_best, iso_fits, kin_best, kin_fits, ipd,
         ov["group"] = (ov["exp"].astype(str) + "-" + ov["mineral"].map(names.mineral)
                        + "-" + ov["background"].astype(str))
     overview = (ov.groupby(["exp", "group"], as_index=False)
-                .agg(数据点=("removal_pct", "size"),
+                # count 而非 size：Ce 为空的行（没测/已删）不参与任何计算，
+                # 按行数计会让"数据点"比实际多出几行。
+                .agg(数据点=("removal_pct", "count"),
                      吸附率最小=("removal_pct", "min"),
                      吸附率最大=("removal_pct", "max")))
     overview.columns = ["实验", "样品组", "数据点", "吸附率最小/%", "吸附率最大/%"]
+
+    # D-R 的 ε 依赖摩尔质量与温度，这两个值来自模板 Settings；
+    # 必须在报告里写明本次用的是哪一组，否则换吸附质后 E 的偏移无从追溯。
+    dr_note = ""
+    if dr_ctx:
+        dr_note = (
+            f'<div class="note">D-R 吸附势按 <b>M = {dr_ctx["molar_mass"]:g} g/mol</b>、'
+            f'<b>T = {dr_ctx["temperature"]:g} K</b> 换算'
+            "（C<sub>mol/L</sub> = Ce[mg/L]/1000/M）。"
+            "换吸附质或温度时，请在模板 Settings 改 <code>molar_mass_g_per_mol</code> / "
+            "<code>temperature_K</code> 后重跑：ε ∝ T，M 与 T 一变，K<sub>DR</sub> 与 E "
+            "就整体平移，而 E 的 8 kJ/mol 判据正落在这个量级上。</div>")
 
     audit_html = ""
     if audit is not None and not audit.empty:
@@ -492,7 +543,12 @@ def write_html(out: Path, data, qc, iso_best, iso_fits, kin_best, kin_fits, ipd,
                 "（第 1 个取本项目的最优参数，其余为其对数扰动）重新拟合每个模型，"
                 "打印参数、SSE、R²、AICc，并与本项目结果逐模型对比。</p>"
                 "<p>判读：<b>relDiff &lt; 1e-6%</b> → 两条路径收敛到同一最优解，Python 结果可信；"
-                "若 MATLAB 找到明显更低的 SSE，说明本项目落入局部极小，以 MATLAB 结果为准并复核该模型。"
+                "relDiff 明显偏大时有两种可能，需先区分："
+                "① 本项目落入局部极小（MATLAB 找到更低的 SSE）；"
+                "② <b>最优解落在本项目设定的参数上下界之外</b>——"
+                "MATLAB 端只做指数参数化（限幅 ±30），没有物理上下界，"
+                "所以它可能给出界外的更低 SSE。看到大偏差时先查该参数是否 "
+                "<code>at_bound</code>（见上表「判定」列），再决定是否以 MATLAB 结果为准。"
                 "逐模型对比结果可直接复制脚本输出留存。</p>")
 
     fig_items = [("图 1", "等温线 Isotherm", "isotherm"),
@@ -532,7 +588,7 @@ def write_html(out: Path, data, qc, iso_best, iso_fits, kin_best, kin_fits, ipd,
 三种解决办法任选：</p>
 <ol style="margin:6px 0 2px 22px">
 <li>右键该 PNG → <b>属性</b> → 常规页底部勾选<b>「解除锁定」</b> → 确定，之后即可正常打开；</li>
-<li>批量解除：PowerShell 执行 <code>Get-ChildItem "C:\\Users\\Uers\\Downloads\\*.png" | Unblock-File</code>；</li>
+<li>批量解除：PowerShell 执行 <code>Get-ChildItem "$env:USERPROFILE\\Downloads\\*.png" | Unblock-File</code>；</li>
 <li>直接使用 <code>output/figures/</code> 里的原图——它们由脚本直接写入磁盘，不带网络标记。</li>
 </ol>
 </details>
@@ -558,6 +614,7 @@ def write_html(out: Path, data, qc, iso_best, iso_fits, kin_best, kin_fits, ipd,
 <div class="note">{solid_line}<br>
 {conv_line}吸附率 = 100×(1−Ce/C0)。</div>
 {_table(overview)}
+{warns_html}
 {issues_html}
 
 <h2>二、吸附等温线</h2>
@@ -573,7 +630,11 @@ def write_html(out: Path, data, qc, iso_best, iso_fits, kin_best, kin_fits, ipd,
 <div class="scroll">{_table(iso_fits)}</div></details>
 
 <h2>三、吸附动力学</h2>
-<p>动力学以 qt=(C0−Ct)/(m/V) 表示；未提供 m/V 时以 mg/L(悬浮液) 表示，曲线形状与 k 不受影响。
+<p>动力学以 qt=(C0−Ct)/(m/V) 表示；未提供 m/V 时以 mg/L(悬浮液) 表示。
+两条口径下 <b>PFO 的 k<sub>1</sub> 与 Avrami 的 k 不变</b>；但 <b>PSO 的 k<sub>2</sub>
+与容量成反比</b>（h=k<sub>2</sub>qe² 不变，k<sub>2</sub> 随 qe² 反向变化），
+Elovich 的 α/β 与 Bangham 的 k<sub>B</sub> 同样随容量标度改变——
+跨口径比较速率常数前必须先统一 m/V。
 对每组数据同时拟合全部动力学模型，并分段拟合 qt–t<sup>0.5</sup> 判别颗粒内扩散阶段。</p>
 {_img_switch(fig_dir, "kinetics", "kinetics_log", "图 3 动力学曲线（误差棒为 SD，仅平行样才画）、AICc 最优模型及 PFO / PSO 参照；横轴为时间，默认线性坐标，可在图上方切换为对数坐标")}
 {_img(fig_dir / "ipd.png", "图 4 颗粒内扩散分段拟合；两段直线的交点即转折时间")}
@@ -587,25 +648,37 @@ def write_html(out: Path, data, qc, iso_best, iso_fits, kin_best, kin_fits, ipd,
 <div class="scroll">{_table(kin_fits)}</div></details>
 
 <h2>四、pH 吸附边与离子强度</h2>
-<p>用四参数 logistic 曲线拟合吸附率–pH 关系，pH<sub>50</sub> 为拟合曲线中点（bottom 与 top 之间），
-斜率反映边的陡峭程度。当高 pH 残余平台明显不同时，pH<sub>50</sub> 不宜直接横向排序，应以逐 pH 差值判断；
-另对 20–80% 吸附窗口做 log K<sub>d</sub>–pH 线性回归，其斜率可指示质子释放/表面络合计量比。</p>
-{_img(fig_dir / "edge.png", "图 5 不同离子强度下的吸附边；实线为四参数 logistic 拟合，仅当 R²≥0.6 时绘出，未达标的组只画散点、pH<sub>50</sub> 一栏留空。图例统一置于图下方")}
+<p>用四参数 logistic 拟合吸附率–pH 关系：θ(pH)=bottom+(top−bottom)/(1+e<sup>(pH−pH50)/w</sup>)。
+<b>bottom 是 pH→+∞ 的平台（高 pH 平台）、top 是 pH→−∞ 的平台（低 pH 平台）</b>，
+pH<sub>50</sub> 为曲线中点，pH50 处斜率 −(top−bottom)/(4w) 反映边的陡峭程度。
+阳离子吸附多随 pH 上升，此时 bottom&gt;top，表中「方向」列会写明是上升边还是下降边。
+当高 pH 残余平台明显不同时，pH<sub>50</sub> 不宜直接横向排序，应以逐 pH 差值判断。
+另对 10–90% 吸附窗口的<b>逐点 K<sub>d</sub>=(C0−Ce)/Ce</b> 做 log K<sub>d</sub>–pH 线性回归，
+其斜率可指示质子释放/表面络合计量比；它<b>不等于</b> log[θ/(1−θ)] 的斜率——后者还多含
+d(log Ce)/dpH 一项，而吸附边实验中 Ce 随 pH 变化显著，两组实测差 2 倍以上。</p>
+{_img(fig_dir / "edge.png", "图 5 不同离子强度下的吸附边；实线为四参数 logistic 拟合，仅当 R²≥0.6 时绘出；未达标的组只画散点，pH50 与两个平台值在表中留空（R² 与拟合状态仍保留供诊断）。图例统一置于图下方")}
 <h3>吸附边参数</h3>
-{_table(edge_params, ["mineral", "background", "n_points", "pH_range", "pH50", "pH50_SE",
-                      "edge_width", "slope_at_pH50", "plateau_high", "R2_logistic",
-                      "logKd_slope", "logKd_R2", "n_outlier", "outlier_pH", "reliable"],
+<div class="scroll">{_table(edge_params,
+        ["mineral", "background", "n_points", "pH_range", "edge_direction",
+         "pH50", "pH50_SE", "edge_width", "slope_at_pH50",
+         "plateau_high", "plateau_low", "R2_logistic",
+         "logKd_slope", "logKd_R2", "logKd_n", "n_outlier", "outlier_pH", "reliable"],
         rename={"mineral": "矿物", "background": "背景", "n_points": "点数",
-                "pH_range": "pH 范围", "pH50": "pH50", "pH50_SE": "pH50 SE",
+                "pH_range": "pH 范围", "edge_direction": "方向",
+                "pH50": "pH50", "pH50_SE": "pH50 SE",
                 "edge_width": "边宽", "slope_at_pH50": "pH50 处斜率",
-                "plateau_high": "高 pH 平台", "R2_logistic": "R²",
+                "plateau_high": "高 pH 平台", "plateau_low": "低 pH 平台",
+                "R2_logistic": "R²",
                 "logKd_slope": "logKd–pH 斜率", "logKd_R2": "logKd R²",
-                "n_outlier": "离群点数", "outlier_pH": "离群 pH", "reliable": "可靠"})}
+                "logKd_n": "Kd 窗口点数",
+                "n_outlier": "离群点数", "outlier_pH": "离群 pH", "reliable": "可靠"})}</div>
 <h3>离子强度效应</h3>
+<p>只给事实性差值：最大/平均 |Δθ| 与方向。曲线交叉也可能只是批次波动，
+因此不再自动生成"内圈络合/静电竞争"这类机理解读。</p>
 {_table(edge_cmp, rename={"mineral": "矿物", "pair": "对比组", "overlap_pH": "pH 重叠区",
                           "max_delta_theta_pct": "最大差值/百分点",
                           "mean_delta_theta_pct": "平均差值/百分点",
-                          "direction": "方向", "hint": "解读"})}
+                          "direction": "方向"})}
 
 <h2>五、质量控制</h2>
 {_img(fig_dir / "qc.png", "图 6 检查标准回收率；虚线为 80% / 120% 接受区间，实线为 100%")}
@@ -616,6 +689,7 @@ def write_html(out: Path, data, qc, iso_best, iso_fits, kin_best, kin_fits, ipd,
 <h2>六、拟合可靠性与模型选择</h2>
 <h3>模型清单与方程</h3>
 {_table(_model_legend_table())}
+{dr_note}
 {audit_html}
 
 {fig_section}

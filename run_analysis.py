@@ -15,7 +15,7 @@ from adsorp.pipeline import run  # noqa: E402
 
 
 def main():
-    ap = argparse.ArgumentParser(description="Sb(V) 吸附数据自动分析")
+    ap = argparse.ArgumentParser(description="吸附数据自动分析")
     ap.add_argument("--template", default=None, help="填写好的 Excel 模板")
     ap.add_argument("--data-dir", default=None, help="仪器原始工作簿目录")
     ap.add_argument("--out", default=None, help="输出目录")

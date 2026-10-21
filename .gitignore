@@ -4,6 +4,7 @@ __pycache__/
 
 # 拟合缓存（可由 run 重新生成）
 output/_analysis.pkl
+output_verify/
 
 # Excel 临时文件
 ~$*

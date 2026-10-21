@@ -67,7 +67,9 @@ def _apply_fonts(book) -> None:
                 )
 
 DATA_COLUMNS = [
-    ("exp", "isotherm | kinetics | edge", "实验类型，三选一；同一实验块可只写首行，下面留空表示沿用上一行"),
+    ("exp", "isotherm | kinetics | edge | qc",
+     "实验类型，四选一；qc 行用于检查标准（标称值填 C0_ppm、测定值填 conc_ppb）。"
+     "同一实验块可只写首行，下面留空表示沿用上一行"),
     ("mineral", "δ-MnO₂ / Rancieite / …", "矿物名，用英文（图上直接显示这个名字）；留空沿用上一行"),
     ("background", "0.01 M NaNO₃ / ASW", "背景电解质；留空沿用上一行"),
     ("ionic_strength_M", "0.01", "离子强度 (mol/L)，留空则从 background 解析"),
@@ -85,9 +87,11 @@ DATA_COLUMNS = [
 ]
 
 SETTINGS_ROWS = [
-    ("project", "Sb(V) adsorption on Mn oxides"),
+    ("project", "Adsorption dataset"),
     ("analyst", ""),
-    ("analyte", "Sb(V)"),
+    ("analyte", ""),
+    # D-R 的吸附势 ε=RT·ln(1+1/C_mol) 要用到这两个值：换吸附质或温度必须改，
+    # 否则 K_DR 与 E 会整体平移。默认 121.76 g/mol 对应 Sb。
     ("molar_mass_g_per_mol", 121.76),
     ("temperature_K", 298.15),
     ("default_C0_kinetics", 6.0),
@@ -105,7 +109,7 @@ SETTINGS_ROWS = [
 ]
 
 README_LINES = [
-    ("Sb(V) 吸附数据模板", "title"),
+    ("吸附数据模板", "title"),
     ("", ""),
     ("怎么用", "h2"),
     ("1. 在 Data 表按行填入实测数据，一行 = 一个样品的一次测定；三组平行就写三行，replicate 分别填 1/2/3。", ""),
@@ -119,6 +123,10 @@ README_LINES = [
     ("8. 背景电解质写 NaNO3 或 NaNO₃ 都可以，脚本会统一成 NaNO₃ 再分组。", ""),
     ("9. 表内字体：西文/数字 Times New Roman、中文宋体。字体只影响显示——脚本按单元格的值读取，"
      "改字体、改字号、加粗都不会影响任何计算。", ""),
+    ("10. 检查标准（QC）行单独写 exp=qc：标称 ppb 填 C0_ppm、测定 ppb 填 conc_ppb，"
+     "mineral/background 可留空；脚本据此算回收率并出 QC 图。", ""),
+    ("11. Settings 的 molar_mass_g_per_mol / temperature_K 只用于 D-R 模型的吸附势换算；"
+     "换吸附质或换温度必须改这两个值，否则 K_DR 与 E 会整体偏移。", ""),
     ("", ""),
     ("浓度换算", "h2"),
     ("conc_ppb 填“标线计算/ppb”，不要填实测荧光值；若填 Ce_ppm，直接使用。", ""),
@@ -393,13 +401,21 @@ def read_template(path: str | Path,
             warns.append(f"{exp}：{n} 行 C0_ppm 留空，已补齐{tail}。")
 
     dil = num("dilution")
-    dil_defaults = {
-        "isotherm": settings.get("default_dilution_isotherm", 1.0),
-        "kinetics": settings.get("default_dilution_kinetics", 1.0),
-        "edge": settings.get("default_dilution_edge", 1.0),
-    }
-    fallback = out["exp"].map(dil_defaults).astype(float)
-    out["dilution"] = dil.fillna(fallback).fillna(1.0)
+    dil_defaults = {exp: (_setting_float(f"default_dilution_{exp}") or 1.0)
+                    for exp in ("isotherm", "kinetics", "edge", "qc")}
+    fallback = pd.to_numeric(out["exp"].map(dil_defaults), errors="coerce")
+    filled = dil.fillna(fallback).fillna(1.0)
+    out["dilution"] = filled
+    # 只填 conc_ppb、漏填稀释倍数时，Ce 会小几百倍、吸附率≈100%。
+    # 而 Ce > 1.5·C0 那条校验恰好抓不到这种"偏小"的错误，必须单独提示。
+    suspect = (dil.isna() & filled.eq(1.0) & out["conc_ppb"].notna()
+               & num("Ce_ppm").isna() & out["exp"].ne("qc"))
+    if suspect.any():
+        n = int(suspect.sum())
+        locs = "、".join(f"第 {int(v)} 行" for v in out.loc[suspect, "row"].head(6))
+        more = f" 等 {n} 行" if n > 6 else ""
+        warns.append(f"{n} 行只填了 conc_ppb 未填稀释倍数，已按 1 计算：{locs}{more}。"
+                     "若实际有稀释，Ce 会成倍偏小、吸附率偏大，请补填 dilution。")
 
     solid = num("solid_g_per_L")
     out["solid_g_per_L"] = solid.where(solid > 0)
@@ -433,7 +449,7 @@ def read_template(path: str | Path,
         warns.append(f"备注命中异常关键词 {len(hits)} 行（{locs}{more}）：仅作提示，未剔除；"
                      "如需剔除请在 exclude 列填 TRUE。")
 
-    valid_exp = ("isotherm", "kinetics", "edge")
+    valid_exp = ("isotherm", "kinetics", "edge", "qc")
 
     # 两个浓度列都空＝使用者主动删掉或没做的点，静默跳过：
     # 既不补值也不报警，处理口径就是"去掉之后"的这份数据。
@@ -460,6 +476,30 @@ def read_template(path: str | Path,
         warns.append(f"{blank_exp} 行 exp 为空且上方没有可沿用的实验类型，已忽略。")
     out = out[out["exp"].isin(valid_exp)].copy()
 
+    # QC 行：从长表里分离出来单独成表，否则会被"缺 mineral""缺 C0"之类的
+    # 检查误判，也会混进吸附率统计。模板用户过去拿不到第五节（质量控制），
+    # 因为 valid_exp 里没有 qc，写 exp=qc 会被直接过滤掉。
+    qc_df = pd.DataFrame()
+    is_qc = out["exp"].eq("qc")
+    if is_qc.any():
+        q = out[is_qc]
+        nominal = pd.to_numeric(q["C0_ppm"], errors="coerce")
+        measured = pd.to_numeric(q["conc_ppb"], errors="coerce")
+        qc_df = pd.DataFrame({
+            "exp": q["group"].astype(str),
+            "file": q["file"],
+            "row": q["row"],
+            "qc": q["note"].replace("", "检查标准"),
+            "nominal_ppb": nominal,
+            "conc_ppb": measured,
+            "recovery_pct": measured / nominal * 100.0,
+        })
+        n_no_nominal = int(nominal.isna().sum())
+        if n_no_nominal:
+            warns.append(f"QC 行有 {n_no_nominal} 条缺标称浓度：exp=qc 时把标称 ppb 填在 C0_ppm 列、"
+                         "测定 ppb 填在 conc_ppb 列。")
+        out = out[~is_qc].copy()
+
     for col in ("mineral", "background"):
         n = int(out[col].eq("").sum())
         if n:
@@ -481,5 +521,6 @@ def read_template(path: str | Path,
         "data_source": f"模板 {path.name}",
         "autofill": autofill,
         "c0_filled": c0_filled,
+        "qc": qc_df,        # exp=qc 的行，pipeline 直接拿去出 QC 图与表
     }
     return out.reset_index(drop=True), cfg, warns

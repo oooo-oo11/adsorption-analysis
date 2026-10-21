@@ -11,7 +11,7 @@ from pathlib import Path
 
 import numpy as np
 
-from .models import ISOTHERM_MODELS, KINETIC_MODELS
+from .models import DR_CONTEXT, ISOTHERM_MODELS, KINETIC_MODELS, R_GAS
 
 # MATLAB 端的模型定义：(显示名, 参数个数, 函数名, 参数名 cellstr)
 _ISO_ORDER = ["langmuir", "freundlich", "temkin", "dr", "sips", "toth", "rp"]
@@ -102,8 +102,13 @@ _HEADER = r"""%% ============================================================
 %
 %  判读
 %    relDiff < 1e-6 %  → 两条路径收敛到同一最优解，Python 结果可信
-%    relDiff 明显偏大   → 该模型存在多个局部极小，需看「多起点」结论，
-%                        或该组点数不足以约束这个模型
+%    relDiff 明显偏大   → 有两种可能，需先区分：
+%                        ① Python 那一组掉进了局部极小（本脚本找到更低 SSE）；
+%                        ② 最优解落在 Python 的物理上下界之外——本脚本只做
+%                           指数参数化（限幅 ±30），没有参数上下界，因此可能
+%                           给出界外的更低 SSE。先查该参数在 Python 端是否
+%                           触界（报告「模型可靠性」表的「判定」列），
+%                           再决定是否采用 MATLAB 的解。
 %% ============================================================
 clear; clc; close all;
 nstart = {nstart};
@@ -241,7 +246,9 @@ end
 
 function y = m_dr(x, p)
 % Dubinin-Radushkevich：Ce(mg/L) -> mol/L -> 吸附势 eps (kJ/mol)
-R = 8.314462618; T = 298.15; M = 121.76;
+% R = 气体常数，T = 温度 (K)，M = 吸附质摩尔质量 (g/mol)
+% 这三个数与 Python 端模板 Settings 的 temperature_K / molar_mass_g_per_mol 一致
+R = {r_gas}; T = {dr_t}; M = {dr_m};
 cm = x / 1000 / M;
 eps = R * T * log(1 + 1 ./ cm) / 1000;
 y = p(1) * exp(-p(2) * eps.^2);
@@ -336,7 +343,12 @@ def write_verify_script(path: Path, curves_iso: dict, curves_kin: dict,
                  "    sum([kin_report.ok]), numel(kin_report.ok), max([kin_report.rel]));\n"
                  if curves_kin else ""),
         tail=_tail_note(bool(curves_iso), bool(curves_kin)),
-    ) + _BODY
+    ) + (_BODY
+         # _BODY 里既有 MATLAB 的 {} 索引又有 %% 注释，不能用 format，
+         # 用占位符替换把 D-R 的常数写成与 Python 端一致的数值。
+         .replace("{r_gas}", f"{R_GAS:.9g}")
+         .replace("{dr_t}", f"{DR_CONTEXT['temperature']:.6g}")
+         .replace("{dr_m}", f"{DR_CONTEXT['molar_mass']:.6g}"))
     # % 在 f-string 里已被转义；这里把 MATLAB 的注释符还原（避免 %% 出现在输出）
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)

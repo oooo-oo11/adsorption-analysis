@@ -19,8 +19,17 @@ S.apply()
 
 
 def _params(res):
+    """取出某模型的参数数组；参数不完整（拟合全失败）时返回 None。
+
+    所有起点都失败时 FitResult 的 params 是空 dict，过去直接按下标取会
+    抛 ``KeyError``，整条流水线就崩在绘图阶段——报告与 Excel 全出不来。
+    """
     model = ISOTHERM_MODELS.get(res.key) or KINETIC_MODELS.get(res.key)
-    return np.array([res.params[n] for n in model.names])
+    if model is None:
+        return None
+    vals = [res.params.get(n, np.nan) for n in model.names]
+    arr = np.asarray(vals, float)
+    return arr if np.all(np.isfinite(arr)) else None
 
 
 def _unit(u: str | None, fallback: str = "mg/L") -> str:
@@ -52,14 +61,15 @@ def _grid(n_panels: int, panel_h_cm: float):
 
 
 def _draw_keys(c: dict, refs: tuple[str, ...], allow_best: bool = True) -> list[str]:
+    """要画的模型键：优先最优模型 + 指定的参照模型，且该模型得真有参数。"""
     best = c["best"].key
-    have = {r.key for r in c.get("all", c["top"])}
+    have = {r.key for r in (c.get("all") or c.get("top") or []) if r.params}
     keys = ([best] if allow_best else []) + [k for k in refs if k != best]
-    return [k for k in keys if k in have or k == best]
+    return [k for k in keys if k in have]
 
 
 def _find(c: dict, key: str):
-    return next(r for r in c.get("all", c["top"]) if r.key == key)
+    return next(r for r in (c.get("all") or c.get("top") or []) if r.key == key)
 
 
 def _letters(n: int) -> list[str]:
@@ -100,7 +110,10 @@ def _panel(ax, letter: str, mineral: str, bg: str):
 # --------------------------------------------------------------------------
 
 def _nice_ceil(v: float) -> float:
-    """把坐标上限取整到好看的刻度（约 5–6 个主刻度，如 300 → 0/50/…/300）。"""
+    """把坐标上限取整到好看的刻度（约 5–6 个主刻度，如 300 → 0/50/…/300）。
+
+    按 5/10/20… 步长走，适合时间轴这类以整十整百为习惯的量。
+    """
     v = max(float(v), 1.0)
     for step in (5, 10, 20, 25, 50, 100, 200, 500):
         if v <= step * 6:
@@ -108,17 +121,40 @@ def _nice_ceil(v: float) -> float:
     return float(np.ceil(v / 1000.0) * 1000.0)
 
 
+def _nice_ceil_dec(v: float) -> float:
+    """按 1/2/2.5/5×10^k 取整，与量级无关（用于浓度这类跨数量级的轴）。
+
+    ``_nice_ceil`` 的最小步长是 5，直接用在 Ce 轴上有致命缺陷：数据上限
+    只要小于 5 mg/L（低浓度体系、稀释后的残余浓度很常见），轴上限就被
+    钉死为 5，所有点挤在左边框附近，图等于不可读。这里改成按十进制量级
+    取整：0.084 → 0.1、0.45 → 0.5、1.2 → 2、4.6 → 5。
+    """
+    v = float(v)
+    if not np.isfinite(v) or v <= 0:
+        return 1.0
+    e = 10.0 ** np.floor(np.log10(v))
+    for m in (1.0, 2.0, 2.5, 5.0, 10.0):
+        if v <= m * e * (1.0 + 1e-9):
+            return float(m * e)
+    return float(10.0 * e)
+
+
 def _curves(curves: dict, out: Path, *, xcol: str, ycol: str, sdcol: str,
             models: dict, refs: tuple[str, ...], xlabel: str, ylabel: str,
             xscale: str, lin_pad: float, log_lo: float, log_hi: float,
-            grade_best: bool = False):
+            grade_best: bool = False, nice: str = "time") -> bool:
     """等温线与动力学共用的一块面板：实测点 + 参照曲线 + 坐标轴 + 图例。
 
     ``grade_best`` 为真时（等温线），最优模型参数触界/共线就不画它，只留
     可解释的参照线；判定写进报告的模型可靠性表，图上不叠红字。
+
+    ``nice`` 选横轴上限的取整方式：``"dec"`` 按十进制量级（浓度轴），
+    ``"time"`` 按 5/10/20 步长（时间轴）。
+
+    返回是否真的画了图。对数版在数据全为 0 时不画，调用方据此不留空文件。
     """
     if not curves:
-        return
+        return False
     items = list(curves.items())
     unit = _common_unit(curves)
     fig, axes = _grid(len(items), 6.9)
@@ -128,17 +164,26 @@ def _curves(curves: dict, out: Path, *, xcol: str, ycol: str, sdcol: str,
         y = np.asarray(d[ycol], float)
 
         if xscale == "log":
-            xlo, xhi = float(np.nanmin(x)) * log_lo, float(np.nanmax(x)) * log_hi
+            # 对数轴只接受正数。Ce=0 或 t=0 是常见采样点，直接 min(x) 会得到
+            # 0 → log10(0)=-inf → 整条 grid 变 NaN、xlim 被忽略，图上没有曲线。
+            pos = x[np.isfinite(x) & (x > 0)]
+            if pos.size == 0:
+                return False
+            xlo, xhi = float(pos.min()) * log_lo, float(pos.max()) * log_hi
             grid = np.logspace(np.log10(xlo), np.log10(xhi), 360)
         else:
-            xlo, xhi = 0.0, _nice_ceil(float(np.nanmax(x)) * lin_pad)
+            top = float(np.nanmax(x)) * lin_pad
+            xhi = _nice_ceil_dec(top) if nice == "dec" else _nice_ceil(top)
+            xlo = 0.0
             grid = np.linspace(0.0, xhi, 400)
 
         ok = _usable(best)
         cmax = 0.0
         for key in _draw_keys(c, refs, allow_best=ok if grade_best else True):
-            res = _find(c, key)
-            yy = np.asarray(models[key].func(grid, _params(res)), float)
+            p = _params(_find(c, key))
+            if p is None:          # 该模型没拟合出参数，跳过而不是崩掉
+                continue
+            yy = np.asarray(models[key].func(grid, p), float)
             fin = yy[np.isfinite(yy)]
             if fin.size:
                 cmax = max(cmax, float(fin.max()))
@@ -155,6 +200,7 @@ def _curves(curves: dict, out: Path, *, xcol: str, ycol: str, sdcol: str,
         _panel(ax, letter, mineral, bg)
         S.legend(ax)
     S.save(fig, out)
+    return True
 
 
 def plot_isotherms(curves: dict, out: Path):
@@ -163,7 +209,7 @@ def plot_isotherms(curves: dict, out: Path):
         _curves(curves, p, xcol="Ce_ppm", ycol="qe", sdcol="qe_sd",
                 models=ISOTHERM_MODELS, refs=("langmuir", "freundlich"),
                 xlabel="C$_e$ (mg/L)", ylabel="Q$_e$ ({unit})", xscale=scale,
-                lin_pad=1.05, log_lo=0.55, log_hi=1.45, grade_best=True)
+                lin_pad=1.05, log_lo=0.55, log_hi=1.45, grade_best=True, nice="dec")
 
 
 def plot_kinetics(curves: dict, out: Path):
@@ -172,7 +218,7 @@ def plot_kinetics(curves: dict, out: Path):
         _curves(curves, p, xcol="time_h", ycol="qt", sdcol="qt_sd",
                 models=KINETIC_MODELS, refs=("pfo", "pso"),
                 xlabel="Time (h)", ylabel="Q$_t$ ({unit})", xscale=scale,
-                lin_pad=1.03, log_lo=0.45, log_hi=2.2)
+                lin_pad=1.03, log_lo=0.45, log_hi=2.2, nice="time")
 
 
 # --------------------------------------------------------------------------
@@ -241,6 +287,15 @@ def plot_edges(curves: dict, out: Path):
         ys = [float(np.nanmin(c["data"]["theta"])) * 100
               for (m, _), c in curves.items() if m == mineral]
         ymin = min([0.0] + [v for v in ys if np.isfinite(v)])
+        # pH 轴按实测范围给，不再硬编码 3.5–10.5：pH 2–12 的数据会被裁到框外
+        ph_all = np.concatenate([np.asarray(c["data"]["pH"], float)
+                                 for (m, _), c in curves.items() if m == mineral])
+        ph_all = ph_all[np.isfinite(ph_all)]
+        if ph_all.size:
+            x_lo = max(0.0, float(ph_all.min()) - 0.5)
+            x_hi = float(ph_all.max()) + 0.5
+        else:
+            x_lo, x_hi = 3.5, 10.5
         yticks = [0, 20, 40, 60, 80, 100]
         if ymin < -5:
             lo_t = int(np.floor(ymin / 20.0) * 20)
@@ -272,7 +327,7 @@ def plot_edges(curves: dict, out: Path):
 
         S.axis(ax, "pH", "Adsorption (%)", ylim=S.ylim_data(ymin, 112),
                yticks=yticks)
-        ax.set_xlim(3.5, 10.5)
+        ax.set_xlim(x_lo, x_hi)
         S.panel_label(ax, letter, N.mineral(mineral))
         # logistic 未达 R²≥0.6 的组只画散点、不画曲线，pH50 报告里留空；
         # 图面不再加红字说明。

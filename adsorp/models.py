@@ -11,7 +11,32 @@ from typing import Callable, Sequence
 import numpy as np
 
 R_GAS = 8.314462618  # J/(mol K)
-M_SB = 121.760       # g/mol
+
+# D-R 的吸附势 ε = RT·ln(1+1/C_mol) 同时依赖吸附质摩尔质量与温度。
+# 这两个值不是常数：换吸附质或换温度，ε 整体平移，K_DR 与 E 都会变。
+# 由 pipeline 从模板 Settings 的 molar_mass_g_per_mol / temperature_K 注入，
+# 未提供时才退回这里的默认值。用模块级 dict 而非函数形参，是为了不改
+# Model.func 的签名（7 个等温线 + 5 个动力学函数共用同一套调用约定）。
+DR_CONTEXT = {"molar_mass": 121.76, "temperature": 298.15}
+
+# 容量参数的单位有两种口径（有 m/V 记 mg/g，没有则记 mg/L 悬浮液），
+# 模型级只写占位符 {q}，渲染参数表时用该组实际的 qe_unit 替换。
+Q_UNIT = "{q}"
+
+
+def configure_dr(molar_mass=None, temperature=None) -> dict:
+    """设定 D-R 用的摩尔质量 (g/mol) 与温度 (K)，返回生效后的配置。
+
+    非正数或非有限值一律忽略，保持上一次的设置。
+    """
+    for key, val in (("molar_mass", molar_mass), ("temperature", temperature)):
+        try:
+            fv = float(val)
+        except (TypeError, ValueError):
+            continue
+        if np.isfinite(fv) and fv > 0:
+            DR_CONTEXT[key] = fv
+    return dict(DR_CONTEXT)
 
 
 @dataclass
@@ -87,11 +112,15 @@ def _temkin_bounds(x, y):
     return _pos_bounds([1e-4 * ymax, 1e-6 / xm], [50 * ymax, 1e4 / xm])
 
 
-def _dr(x, p, T=298.15):
-    """Dubinin-Radushkevich，x 为 mg/L，内部换算为 mol/L 计算吸附势 ε(kJ/mol)。"""
+def _dr(x, p):
+    """Dubinin-Radushkevich，x 为 mg/L，内部换算为 mol/L 计算吸附势 ε(kJ/mol)。
+
+    换算依赖吸附质摩尔质量与温度，两者由 :func:`configure_dr` 注入
+    （默认 121.76 g/mol / 298.15 K，即 Sb(V) 在室温下）。
+    """
     qm, Kdr = p
-    cm = np.maximum(x, 1e-30) / 1000.0 / M_SB
-    eps = R_GAS * T * np.log1p(1.0 / cm) / 1000.0  # kJ/mol
+    cm = np.maximum(x, 1e-30) / 1000.0 / DR_CONTEXT["molar_mass"]
+    eps = R_GAS * DR_CONTEXT["temperature"] * np.log1p(1.0 / cm) / 1000.0  # kJ/mol
     return qm * np.exp(-Kdr * eps ** 2)
 
 
@@ -155,7 +184,7 @@ def _rp_bounds(x, y):
 ISOTHERM_MODELS: dict[str, Model] = {
     m.key: m
     for m in [
-        Model("langmuir", "Langmuir", ["qmax", "K_L"], ["mg/g 或 mg/L", "L/mg"],
+        Model("langmuir", "Langmuir", ["qmax", "K_L"], [Q_UNIT, "L/mg"],
               _langmuir, _langmuir_guess, _langmuir_bounds,
               "qe = qmax·K·Ce/(1+K·Ce)", "isotherm",
               "单层、均一位点吸附；qmax 为饱和容量，K 为亲和常数。"),
@@ -166,16 +195,19 @@ ISOTHERM_MODELS: dict[str, Model] = {
         Model("temkin", "Temkin", ["B", "A_T"], ["mg/g", "L/mg"],
               _temkin, _temkin_guess, _temkin_bounds,
               "qe = B·ln(A_T·Ce)", "isotherm",
-              "考虑吸附质-吸附剂相互作用；B=RT/b。"),
-        Model("dr", "Dubinin-Radushkevich", ["qmax", "K_DR"], ["mg/g 或 mg/L", "mol²/kJ²"],
+              "考虑吸附质-吸附剂相互作用；B=RT/b_T，"
+              "报告里按本次温度换算 b_T=RT/B（J/mol）。"),
+        Model("dr", "Dubinin-Radushkevich", ["qmax", "K_DR"], [Q_UNIT, "mol²/kJ²"],
               _dr, _dr_guess, _dr_bounds,
-              "qe = qmax·exp(-K_DR·ε²), ε=RT·ln(1+1/Ce)", "isotherm",
-              "用于判别物理/化学吸附，E=1/√(2K_DR) (kJ/mol)。"),
-        Model("sips", "Sips", ["qmax", "K_S", "m"], ["mg/g 或 mg/L", "L/mg", "—"],
+              "qe = qmax·exp(-K_DR·ε²), ε=RT·ln(1+1/C_mol)", "isotherm",
+              "ε 的浓度须用 mol/L：C_mol = Ce[mg/L]/1000/M，M 与 T 见 Settings 的 "
+              "molar_mass_g_per_mol / temperature_K；判据 E=1/√(2K_DR) (kJ/mol)，"
+              "E<8 物理吸附、8–16 离子交换、>16 化学吸附。"),
+        Model("sips", "Sips", ["qmax", "K_S", "m"], [Q_UNIT, "L/mg", "—"],
               _sips, _sips_guess, _sips_bounds,
               "qe = qmax(K·Ce)^m/[1+(K·Ce)^m]", "isotherm",
               "Langmuir-Freundlich 三参数式；m→1 退化为 Langmuir。"),
-        Model("toth", "Toth", ["qmax", "K_T", "t"], ["mg/g 或 mg/L", "L/mg", "—"],
+        Model("toth", "Toth", ["qmax", "K_T", "t"], [Q_UNIT, "L/mg", "—"],
               _toth, _toth_guess, _toth_bounds,
               "qe = qmax·K·Ce/[1+(K·Ce)^t]^(1/t)", "isotherm",
               "三参数异质表面模型；t→1 退化为 Langmuir。"),
@@ -272,11 +304,11 @@ def _bangham_bounds(x, y):
 KINETIC_MODELS: dict[str, Model] = {
     m.key: m
     for m in [
-        Model("pfo", "准一级 (PFO)", ["qe", "k1"], ["mg/g 或 —", "1/h"],
+        Model("pfo", "准一级 (PFO)", ["qe", "k1"], [Q_UNIT, "1/h"],
               _pfo, _pfo_guess, _pfo_bounds,
               "qt = qe[1-exp(-k1·t)]", "kinetic",
               "Lagergren 准一级；物理吸附/扩散控制常用。"),
-        Model("pso", "准二级 (PSO)", ["qe", "k2"], ["mg/g 或 —", "g/(mg·h)"],
+        Model("pso", "准二级 (PSO)", ["qe", "k2"], [Q_UNIT, "g/(mg·h)"],
               _pso, _pso_guess, _pso_bounds,
               "qt = k2·qe²·t/(1+k2·qe·t)", "kinetic",
               "Ho-McKay 准二级；化学吸附（共享电子）常用，h=k2·qe²。"),
@@ -284,7 +316,7 @@ KINETIC_MODELS: dict[str, Model] = {
               _elovich, _elovich_guess, _elovich_bounds,
               "qt = (1/β)·ln(1+αβt)", "kinetic",
               "描述异质表面化学吸附，不收敛到平台。"),
-        Model("avrami", "Avrami", ["qe", "k_av", "n"], ["mg/g 或 —", "1/h", "—"],
+        Model("avrami", "Avrami", ["qe", "k_av", "n"], [Q_UNIT, "1/h", "—"],
               _avrami, _avrami_guess, _avrami_bounds,
               "qt = qe[1-exp(-(k·t)^n)]", "kinetic",
               "多步/成核生长动力学；n 偏离 1 表示多机制。"),

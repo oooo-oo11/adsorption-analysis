@@ -25,7 +25,7 @@ BASE = Path(__file__).resolve().parent.parent
 
 CACHE_KEYS = ["data", "qc", "eq", "ipd", "iso_fits", "iso_best", "curves_iso",
               "kin_fits", "kin_best", "curves_kin", "edge_params", "curves_edge",
-              "edge_cmp", "warns", "audit", "solid", "issues"]
+              "edge_cmp", "warns", "audit", "solid", "issues", "dr_ctx"]
 
 
 def load_config(path: Path) -> dict:
@@ -117,17 +117,41 @@ def run(*, data_dir: str | Path | None = None,
                 if pd.notna(v):
                     per_row.setdefault(m, float(v))
             solid = per_row or None
-        qc = pd.DataFrame(columns=["exp", "qc", "nominal_ppb", "conc_ppb", "recovery_pct"])
+        # 逐行固液比与 Settings 冲突时说明一句：现在行内值优先（更具体），
+        # 但填表人可能以为 Settings 会覆盖，qe 差一倍却看不出来源。
+        if "solid_g_per_L" in data and isinstance(solid, dict):
+            conflicts = sorted({
+                f"{m}：表内 {float(v):g}、Settings {s:g}"
+                for m, v in zip(data["mineral"], data["solid_g_per_L"])
+                if pd.notna(v) and (s := analyze._solid_for(solid, m)) is not None
+                and abs(float(v) - s) > 1e-9})
+            if conflicts:
+                io_warn.append("固液比在 Data 表与 Settings 中数值不同，已按 Data 表逐行值计算："
+                               + "；".join(conflicts[:5])
+                               + ("…" if len(conflicts) > 5 else ""))
+        # #23：模板也能带 QC 行（exp=qc），read_template 会把它们分离出来
+        qc = cfg_t.get("qc")
+        if not isinstance(qc, pd.DataFrame) or qc.empty:
+            qc = pd.DataFrame(columns=["exp", "qc", "nominal_ppb", "conc_ppb", "recovery_pct"])
     else:
         data_dir = Path(data_dir or cfg.get("data_dir") or BASE).resolve()
         log(f"[1/5] 读取数据：{data_dir}")
         data, qc, _, io_warn = read_all(data_dir, cfg)
+        cfg_t = {}
 
     if data.empty:
         raise SystemExit("未解析到数据：请检查模板的 Data 表，或文件名是否包含 等温/动力学/吸附边。")
     log(f"      {len(data)} 行有效数据；QC {len(qc)} 条")
 
-    log("[2/5] 计算 Ce / qe / 吸附分数")
+    log(f"[2/5] 计算 Ce / qe / 吸附分数")
+    # D-R 的 ε 依赖吸附质摩尔质量与温度，两者都在模板 Settings 里；
+    # 这里在读数据后立即生效，后面的拟合与出图都用同一套常数。
+    from .models import configure_dr
+    settings = (cfg_t.get("settings") if template else None) or {}
+    dr_ctx = configure_dr(settings.get("molar_mass_g_per_mol"),
+                          settings.get("temperature_K"))
+    if template and settings:
+        log(f"      D-R 常数：M = {dr_ctx['molar_mass']:g} g/mol，T = {dr_ctx['temperature']:g} K")
     iso = analyze.isotherm_data(data, solid)
     kin = analyze.kinetics_data(data, solid)
     edge = analyze.edge_data(data)
@@ -156,7 +180,7 @@ def run(*, data_dir: str | Path | None = None,
                  iso_fits=iso_fits, iso_best=iso_best, curves_iso=curves_iso,
                  kin_fits=kin_fits, kin_best=kin_best, curves_kin=curves_kin,
                  edge_params=edge_params, curves_edge=curves_edge, edge_cmp=edge_cmp,
-                 warns=warns, audit=audit, solid=solid, issues=issues)
+                 warns=warns, audit=audit, solid=solid, issues=issues, dr_ctx=dr_ctx)
     with cache.open("wb") as fh:
         pickle.dump(state, fh)
     return _finish(out, make_figs, verbose, state)
@@ -170,6 +194,7 @@ def _finish(out: Path, make_figs: bool, verbose: bool, st: dict) -> dict:
     edge_params, curves_edge, edge_cmp = st["edge_params"], st["curves_edge"], st["edge_cmp"]
     warns, audit, solid = st["warns"], st["audit"], st["solid"]
     issues = st.get("issues")
+    dr_ctx = st.get("dr_ctx")
 
     def log(msg: str):
         if verbose:
@@ -223,7 +248,8 @@ def _finish(out: Path, make_figs: bool, verbose: bool, st: dict) -> dict:
         warns.append(f"MATLAB 复核脚本生成失败：{exc}")
     html = report.write_html(out, data, qc, iso_best, iso_fits, kin_best, kin_fits,
                              ipd, edge_params, edge_cmp, curves_iso, curves_kin,
-                             solid, audit=audit, issues=issues)
+                             solid, audit=audit, issues=issues, warns=warns,
+                             dr_ctx=dr_ctx)
     xlsx = report.write_excel(out, data, qc, iso_fits, iso_best, kin_fits, kin_best,
                               ipd, eq, edge_params, edge_cmp, audit=audit)
 
@@ -259,8 +285,14 @@ def _print_summary(iso_best, kin_best, edge_params, warns):
     if not edge_params.empty:
         print("\n吸附边：")
         for _, r in edge_params.iterrows():
-            print(f"  {r['mineral']}-{r['background']}: pH50={r['pH50']:.2f}  "
-                  f"斜率={r['slope_at_pH50']:.3f}  R2={r['R2_logistic']:.3f}")
+            # 拟合不成立时 pH50 / 斜率是 NaN（报告里留空），控制台也不该印 "nan"
+            ph50 = r.get("pH50", np.nan)
+            sl = r.get("slope_at_pH50", np.nan)
+            r2 = r.get("R2_logistic", np.nan)
+            print(f"  {r['mineral']}-{r['background']}: "
+                  f"pH50={'—' if not np.isfinite(ph50) else f'{ph50:.2f}'}  "
+                  f"斜率={'—' if not np.isfinite(sl) else f'{sl:.3f}'}  "
+                  f"R2={'—' if not np.isfinite(r2) else f'{r2:.3f}'}")
     if warns:
         print(f"\n数据质量提示 {len(warns)} 条：")
         for w in warns:

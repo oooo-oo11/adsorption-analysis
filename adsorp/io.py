@@ -39,10 +39,34 @@ MINERAL_DISPLAY = {
     "六方纤铁矿": "六方纤铁矿",
 }
 
-GROUP_RE = re.compile(
-    r"^(?P<mineral>.+?)-(?P<bg>ASW|(?P<conc>\d+(?:\.\d+)?)\s*M\s*NaNO3)$",
-    re.IGNORECASE,
-)
+# 背景电解质里"盐"的种类：默认 NaNO3（含 Unicode 下标写法）。
+# 换成 NaCl / CaCl2 / KNO3 体系时，若不加进这个列表，parse_group 会一律
+# 返回 None，所有数据行都被判为"不属于任何矿物-背景组"而全部丢弃。
+# 可在 config.json 里写 {"legacy": {"background_salts": ["NaCl", "CaCl2"]}}。
+DEFAULT_SALTS = ("NaNO3", "NaNO₃")
+
+# 仪器表头里"初始浓度"与"总稀释倍数"的标签。换元素后表头常写成
+# "初始 As/ppm" 之类，用列表容忍多种写法。
+C0_LABELS = ("初始 Sb/ppm", "初始浓度/ppm", "初始浓度")
+DIL_LABELS = ("总稀释倍数",)
+
+
+def _bg_pattern(salts=DEFAULT_SALTS) -> re.Pattern:
+    salt = "|".join(re.escape(s) for s in salts)
+    return re.compile(
+        rf"^(?P<mineral>.+?)-(?P<bg>ASW|(?P<conc>\d+(?:\.\d+)?)\s*M\s*(?:{salt}))$",
+        re.IGNORECASE)
+
+
+GROUP_RE = _bg_pattern()
+
+
+def set_background_salts(salts) -> None:
+    """替换背景电解质盐的种类（来自 config.json 的 legacy.background_salts）。"""
+    global GROUP_RE
+    vals = [str(s).strip() for s in (salts or []) if str(s).strip()]
+    if vals:
+        GROUP_RE = _bg_pattern(tuple(vals))
 
 
 def _norm(s) -> str:
@@ -94,7 +118,11 @@ def parse_group(name: str):
     mineral = MINERAL_DISPLAY.get(mineral, mineral)
     if bg == "ASW":
         return mineral, "ASW", np.nan
-    return mineral, f"{float(conc):g} M NaNO₃", float(conc)
+    # 盐名从匹配到的背景串里取，不能写死 NaNO₃——换 NaCl 时组名会被
+    # 错误地统一成 NaNO₃，两个不同背景的组就被合并成一组。
+    salt = re.sub(r"^[\d.]+\s*M\s*", "", m.group("bg"), flags=re.I).strip()
+    salt = salt.replace("NaNO3", "NaNO₃")
+    return mineral, f"{float(conc):g} M {salt}", float(conc)
 
 
 def _find_header(ws):
@@ -106,18 +134,26 @@ def _find_header(ws):
 
 
 def _find_meta(ws, header_row: int):
-    """从表头以上区域提取 初始 Sb/ppm 与 总稀释倍数。"""
+    """从表头以上区域提取初始浓度与总稀释倍数（标签见 C0_LABELS / DIL_LABELS）。"""
     meta = {}
     for r in range(1, header_row):
         for c in range(1, min(ws.max_column, 20) + 1):
             key = _norm(ws.cell(r, c).value)
-            if key in {"初始 Sb/ppm", "总稀释倍数"}:
+            if key in C0_LABELS or key in DIL_LABELS:
                 for k in range(c + 1, min(ws.max_column, c + 4) + 1):
                     v = _num(ws.cell(r, k).value)
                     if v is not None:
                         meta[key] = v
                         break
     return meta
+
+
+def _first_meta(meta: dict, labels) -> float | None:
+    for k in labels:
+        v = _num(meta.get(k))
+        if v is not None:
+            return v
+    return None
 
 
 def read_sheet(path: Path, exp: str, defaults: dict | None = None):
@@ -144,9 +180,9 @@ def read_sheet(path: Path, exp: str, defaults: dict | None = None):
     c0_default = _num(defaults.get("C0_ppm"))
     dil_default = _num(defaults.get("dilution"))
     if c0_default is None:
-        c0_default = _num(meta.get("初始 Sb/ppm"))
+        c0_default = _first_meta(meta, C0_LABELS)
     if dil_default is None:
-        dil_default = _num(meta.get("总稀释倍数"))
+        dil_default = _first_meta(meta, DIL_LABELS)
 
     rows, qc_rows = [], []
     current_group = None
@@ -272,6 +308,9 @@ def read_sheet(path: Path, exp: str, defaults: dict | None = None):
 
 
 def read_all(data_dir: Path, cfg: dict):
+    salts = (cfg.get("legacy") or {}).get("background_salts")
+    if salts:
+        set_background_salts(salts)
     files = {
         "isotherm": sorted(data_dir.glob("*等温*.xlsx")),
         "kinetics": sorted(data_dir.glob("*动力学*.xlsx")),
@@ -282,7 +321,20 @@ def read_all(data_dir: Path, cfg: dict):
         if not paths:
             warnings.append(f"未找到 {exp} 数据文件")
             continue
-        p = [x for x in paths if not x.name.startswith("~$")][0]
+        # Excel 打开文件时会在同目录留一个 "~$xxx.xlsx" 锁文件，它不是数据。
+        # 过滤后可能一个都不剩（只开了 Excel 还没保存过别的），过去直接
+        # 取 [0] 会抛 IndexError，整条流水线连提示都没有就崩掉。
+        usable = [x for x in paths if not x.name.startswith("~$")]
+        if not usable:
+            warnings.append(f"{exp}：只匹配到 Excel 临时文件（~$…），已跳过；"
+                            "请先关闭 Excel 再重跑。")
+            continue
+        p = usable[0]
+        if len(usable) > 1:
+            warnings.append(
+                f"{exp}：匹配到 {len(usable)} 个文件，仅使用 {p.name}，"
+                f"其余（{', '.join(x.name for x in usable[1:])}）已忽略；"
+                "如需指定请改用 --template。")
         df, qc, meta, warn = read_sheet(p, exp, cfg.get("defaults", {}).get(exp, {}))
         frames.append(df)
         if not qc.empty:
