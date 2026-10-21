@@ -4,6 +4,10 @@ __pycache__/
 
 # 拟合缓存（可由 run 重新生成）
 output/_analysis.pkl
+
+# 归档区：历史验证输出、旧代码备份、临时试验产物，不参与版本管理
+_archive/
+# 历史目录名，恢复归档时仍忽略
 output_verify/
 
 # Excel 临时文件

@@ -1,0 +1,21 @@
+cmd
+
+cd /d C:\Users\Uers\Desktop\分析
+
+rem 1) 先校验，不拟合（几秒）
+adsorp.bat check --template tod.xlsx
+
+rem 2) 正式跑（本机约 35 秒；--out 省略时默认 output）
+adsorp.bat run --template tod.xlsx
+
+rem 3) 打开报告
+start output\报告.html
+
+rem 只重绘图与报告，不重跑拟合（调图版式时用）
+adsorp.bat run --reuse
+
+rem 读 data\raw 里的 3 个仪器原始工作簿（不用模板时）
+adsorp.bat run
+
+rem 生成空白模板（默认写到 templates\吸附数据模板.xlsx）
+adsorp.bat template

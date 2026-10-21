@@ -118,7 +118,7 @@ README_LINES = [
     ("4. mineral 列直接填「英文名」（如 Rancieite、Acid birnessite）：图上就用这个名字，不再经脚本翻译。"
      "以后新增矿物，照这个写法填即可，不必改 names.json。", ""),
     ("5. Settings 表填全局默认值，并在 solids 区列出每个矿物的固液比 m/V (g/L)，键名与 mineral 列一致。", ""),
-    ("6. 保存后执行：adsorp.bat run --template 吸附数据模板.xlsx --out output（在项目目录下；等价于 python -m adsorp.cli run）", ""),
+    ("6. 保存后执行：adsorp.bat run --template templates/吸附数据模板.xlsx --out output（在项目目录下；等价于 python -m adsorp.cli run）", ""),
     ("7. 结果：output/报告.html（含单图下载、每张图下方可展开的绘图代码）、结果汇总.xlsx、figures/（PNG+PDF）、tables/（CSV）。", ""),
     ("8. 背景电解质写 NaNO3 或 NaNO₃ 都可以，脚本会统一成 NaNO₃ 再分组。", ""),
     ("9. 表内字体：西文/数字 Times New Roman、中文宋体。字体只影响显示——脚本按单元格的值读取，"

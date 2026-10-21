@@ -40,7 +40,7 @@ def _cmd_template(a) -> int:
     p = write_template(a.path)
     print(f"已生成模板：{p}")
     print("填写 Data 表后在 Settings 的 solids 区填各矿物固液比，然后运行：")
-    print(f"  adsorp.bat run --template \"{p.name}\" --out output")
+    print(f"  adsorp.bat run --template \"{p.as_posix()}\" --out output")
     return 0
 
 
@@ -180,7 +180,7 @@ def main(argv: list[str] | None = None) -> int:
     p.set_defaults(func=_cmd_run)
 
     p = sub.add_parser("template", help="生成空白 Excel 模板")
-    p.add_argument("path", nargs="?", default="吸附数据模板.xlsx")
+    p.add_argument("path", nargs="?", default="templates/吸附数据模板.xlsx")
     p.set_defaults(func=_cmd_template)
 
     p = sub.add_parser("matlab", help="导出 MATLAB 脚本（数组 或 全模型复核）")
@@ -203,7 +203,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--template", default=None, help="从已填模板导出（省略则读原始工作簿）")
     p.add_argument("--data-dir", default=None)
     p.add_argument("--config", default="config.json")
-    p.add_argument("--out", default="吸附数据_示例.xlsx")
+    p.add_argument("--out", default="templates/吸附数据_示例.xlsx")
     p.set_defaults(func=_cmd_export)
 
     args = ap.parse_args(argv)
