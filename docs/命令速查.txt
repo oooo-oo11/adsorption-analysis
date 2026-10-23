@@ -16,11 +16,12 @@ cd "C:\path\to\分析"                  # PowerShell 用 cd
 Invoke-Item output\报告.html           # 打开报告（cmd 用 start）
 
 .\adsorp.bat run --reuse               # 只重绘图与报告，不重跑拟合
+.\adsorp.bat run --ipd-stages 3        # 颗粒内扩散分三段（默认两段，需 ≥10 个时间点）
 
 ----------------------------------------------------------------
 换数据
 ----------------------------------------------------------------
-# 方式 1：工作簿丢进 data\（文件名含 等温 / 动力学 / 吸附边）
+# 方式 1：工作簿丢进 data\（按表内内容自动判断等温/动力学/吸附边，不用改文件名）
 .\adsorp.bat run
 
 # 方式 2：整理成长表模板
@@ -38,8 +39,7 @@ Invoke-Item output\报告.html           # 打开报告（cmd 用 start）
 排错
 ----------------------------------------------------------------
 .\adsorp.bat check --template 你的表.xlsx    # 先看行数/分组/缺列
-Get-Content output\run.log                    # 上次运行日志（PowerShell）
-type output\run.log                           # 上次运行日志（cmd）
+双击 adsorp.bat 后结论会留在运行窗口里        # 数据质量提示、模型触界等只打印到窗口
 
 找不到 Python：设置环境变量指向解释器
   $env:ADSORP_PYTHON = "C:\Python313\python.exe"     # PowerShell

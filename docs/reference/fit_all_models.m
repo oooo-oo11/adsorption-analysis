@@ -39,6 +39,7 @@ CFG.n_start     = 20;            % 每个模型的多起点个数
 CFG.seed        = 42;            % 随机种子，保证每次结果一致
 CFG.out_file    = '';            % 留空 = 与数据文件同目录的 fit_results.xlsx
 CFG.min_pts     = 4;             % 少于这个独立点数不拟合（自由度不足）
+CFG.ipd_stages  = 2;             % 颗粒内扩散分段数：2（默认）或 3（需 n>=10）
 CFG.verbose     = true;
 rng(CFG.seed);                   % 固定随机数流，多起点扰动可复现
 
@@ -77,7 +78,7 @@ m = strcmp(D.exp, 'kinetics');
 if any(m)
     fprintf('\n---- 动力学（%d 个模型，x = t h）----\n', numel(kin_models));
     [rows, best_lines] = run_kinetics(D, m, kin_models, CFG, rows, best_lines);
-    fprintf('\n---- 颗粒内扩散（qt vs t^0.5，两段折线）----\n');
+    fprintf('\n---- 颗粒内扩散（qt vs t^0.5，%d 段折线）----\n', CFG.ipd_stages);
     rows = run_ipd(D, m, CFG, rows);
 else
     fprintf('\n---- 动力学：无数据，跳过 ----\n');
@@ -580,9 +581,13 @@ end
 
 
 function rows = run_ipd(D, mask, CFG, rows)
-% Weber-Morris：qt 对 t^0.5 的两段线性，断点由总残差最小确定。
+% Weber-Morris：qt 对 t^0.5 的分段线性，断点由总残差最小确定。
+%   CFG.ipd_stages = 2 → 膜扩散 / 颗粒内扩散（或 颗粒内扩散 / 平衡）
+%   CFG.ipd_stages = 3 → 膜扩散 / 颗粒内扩散 / 平衡，要求 n >= 10
     keys = group_keys(D.mineral(mask), D.bg(mask));
     idx = find(mask);
+    nst = CFG.ipd_stages;
+    tags = {'I', 'II', 'III'};
     for k = 1:numel(keys)
         sel = idx(strcmp(strcat(D.mineral(idx), ' | ', D.bg(idx)), keys{k}));
         t = D.t(sel); qt = D.qe(sel);
@@ -592,33 +597,69 @@ function rows = run_ipd(D, mask, CFG, rows)
         s = sqrt(ut(ok)); y = mqt(ok);
         n = numel(s);
         fprintf('\n  [%s]  n=%d\n', keys{k}, n);
-        if n < 7
-            fprintf('      点数 < 7，不做分段拟合\n');
+        if n < 3 * nst + 1
+            fprintf('      点数 < %d，不做 %d 段拟合\n', 3 * nst + 1, nst);
             continue;
         end
-        best = inf; bi = 0; bp1 = []; bp2 = [];
-        for b = 4:(n-3)
-            p1 = polyfit(s(1:b), y(1:b), 1);
-            p2 = polyfit(s(b+1:end), y(b+1:end), 1);
-            r = [y(1:b) - polyval(p1, s(1:b)); y(b+1:end) - polyval(p2, s(b+1:end))];
+        % 断点组合：每段至少 3 个点（2 点定一条直线，3 点才有残差自由度），
+        % 与 Python 端 _ipd_breaks 的枚举范围一致，否则同一份数据会选出不同断点。
+        if nst == 2
+            cands = num2cell(3:(n - 3));
+        else
+            cands = {};
+            for b1 = 3:(n - 6)
+                for b2 = (b1 + 3):(n - 3)
+                    cands{end + 1} = [b1 b2]; %#ok<AGROW>
+                end
+            end
+        end
+        best = inf; bs = []; bp = {};
+        for c = 1:numel(cands)
+            brk = cands{c};
+            edg = [0 brk n];
+            P = cell(1, numel(brk) + 1); r = zeros(n, 1);
+            for j = 1:numel(P)
+                a = edg(j); b = edg(j + 1);
+                P{j} = polyfit(s(a + 1:b), y(a + 1:b), 1);
+                r(a + 1:b) = y(a + 1:b) - polyval(P{j}, s(a + 1:b));
+            end
             ss = sum(r .^ 2);
-            if ss < best; best = ss; bi = b; bp1 = p1; bp2 = p2; end
+            if ss < best; best = ss; bs = brk; bp = P; end
         end
-        k1 = bp1(1); k2 = bp2(1); C1 = bp1(2); C2 = bp2(2);
-        tb = s(bi) ^ 2;          % 断点时间：由 t^0.5 反算，避免索引口径不一致
-        M = metrics(y, [polyval(bp1, s(1:bi)); polyval(bp2, s(bi+1:end))], 4);
-        fprintf('      Stage I : k1 = %.4g  C1 = %.4g\n', k1, C1);
-        fprintf('      Stage II: k2 = %.4g  C2 = %.4g   断点 t = %.4g h (t^0.5 = %.3f)\n', ...
-                k2, C2, tb, sqrt(tb));
+        edg = [0 bs n];
+        yhat = zeros(n, 1);
+        for j = 1:numel(bp)
+            a = edg(j); b = edg(j + 1);
+            yhat(a + 1:b) = polyval(bp{j}, s(a + 1:b));
+        end
+        M = metrics(y, yhat, 2 * numel(bp));
+        p = zeros(1, 2 * numel(bp));
+        for j = 1:numel(bp)
+            p(2 * j - 1) = bp{j}(1); p(2 * j) = bp{j}(2);
+            % 断点时间由 t^0.5 反算，避免索引口径不一致
+            fprintf('      Stage %-3s: k%d = %.4g  C%d = %.4g   段内 n=%d', ...
+                    tags{j}, j, p(2 * j - 1), j, p(2 * j), edg(j + 1) - edg(j));
+            if j < numel(bp)
+                fprintf('   断点 t = %.4g h (t^0.5 = %.3f)\n', s(bs(j)) ^ 2, s(bs(j)));
+            else
+                fprintf('\n');
+            end
+        end
         fprintf('      R2 = %.4f   SSE = %.4g\n', M.r2, M.sse);
-        if k2 <= 0
-            fprintf('      [提示] 第二段斜率 <= 0：后期已无扩散控制特征，该分段不宜解释。\n');
-        elseif k2 > k1
-            fprintf('      [提示] 第二段比第一段更陡（k2 > k1），不符合扩散控制，检查末段数据。\n');
+        kk = p(1:2:end);
+        if kk(end) <= 0
+            fprintf('      [提示] 第 %d 段斜率 <= 0：后期已无扩散控制特征，该分段不宜解释。\n', nst);
+        else
+            bad = find(kk(2:end) >= kk(1:end - 1));
+            if ~isempty(bad)
+                ks = strjoin(arrayfun(@(i) sprintf('k%d=%.4g', i, kk(i)), ...
+                                      1:numel(kk), 'UniformOutput', false), '、');
+                fprintf('      [提示] 斜率未逐段递减（%s），不符合扩散控制，检查分段点数与末段数据。\n', ks);
+            end
         end
-        p = [k1 C1 k2 C2];
-        rows = add_row(rows, keys{k}, 'ipd', 'Stage I+II', p, ...
-                       {'k1','C1','k2','C2'}, M, false);
+        lbl = ['Stage ' strjoin(tags(1:nst), '+')];
+        rows = add_row(rows, keys{k}, 'ipd', lbl, p, ...
+                       {'k1','C1','k2','C2','k3','C3'}, M, false);
     end
 end
 

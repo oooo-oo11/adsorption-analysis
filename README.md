@@ -85,7 +85,18 @@ adsorp.bat run
 .\adsorp.bat run --solid 3          # 覆盖固液比，单一数值套用到所有样品
 .\adsorp.bat run --data-dir D:\某批数据
 .\adsorp.bat run --no-figs          # 只出表，不绘图
+.\adsorp.bat run --ipd-stages 3     # 颗粒内扩散按三段拟合（默认两段）
 ```
+
+`--ipd-stages 3` 把 Weber–Morris 分段从两段改成三段，对应
+**膜扩散 → 颗粒内扩散 → 平衡** 的完整图像，并要求三段斜率逐段递减。
+每段至少 3 个点，所以需要 **≥10 个时间点**，否则该组跳过并提示；
+时间点不足 10 个的组建议保持默认两段。三段结果的表里多出
+`break2_t_h / k_id3 / C3` 与 `n_seg`（各段点数）——
+某段只有 3 个点时斜率标准误很大，只宜作趋势示意。
+
+斜率不递减（后段 ≥ 前段）或末段斜率 ≤ 0 的组**不改数据、不改结果**，
+只在运行窗口给出提示，报告与图件保持原样。
 
 ---
 
@@ -119,6 +130,7 @@ adsorp.bat run
 | `run --solid 3` | 覆盖固液比（单一数值，适用于所有样品） |
 | `run --no-figs` | 只出表，不绘图 |
 | `run --reuse` | 复用上次拟合，只重绘图/报告 |
+| `run --ipd-stages 3` | 颗粒内扩散分三段（默认 2，需 ≥10 个时间点） |
 | `template` | 生成空白模板 `templates/吸附数据模板.xlsx` |
 | `check --template 数据.xlsx` | 只校验：行数、分组、缺列、异常标记 |
 | `export --out 示例.xlsx` | 把当前已解析数据导出成「填好的模板」 |
@@ -157,7 +169,7 @@ adsorp.bat run
 
 - 只读模板的 `Data` + `Settings` 两张表，自己算 Ce / qe / 固液比，不依赖 Python 的任何中间产物；
 - 7 个等温线模型（D-R 只在填了 `molar_mass_g_per_mol` 时才跑）、5 个动力学模型、
-  两段 IPD、4 参数 pH 边 logistic 全部拟合；
+  IPD 分段（`CFG.ipd_stages` 设 2 或 3，与 `--ipd-stages` 对应）、4 参数 pH 边 logistic 全部拟合；
 - 每个模型输出参数、SSE、R²、adj R²、RMSE、AICc，并标注参数是否触界；
 - 多起点 `fminsearch`（Nelder-Mead），参数在对数空间搜索保证为正，
   **不需要 Optimization Toolbox / Curve Fitting Toolbox**，只用基础 MATLAB；
@@ -302,8 +314,9 @@ qe (mg/g)  = (C0 − Ce) / (m/V)
 配色不写死：脚本按数据里实际出现的吸附剂名排序后分派色板与标记，未登记的名称用
 名称哈希兜底，因此换体系时颜色不会重复、也不会每次运行变一个样。
 
-**图内与报告正文都不放警示文字**：模型触界、Stage II 斜率为负、logistic 不收敛、
-低负载点截断这类判断只打印在运行窗口与 `run.log` 里，报告正文保持成品形态。
+**图内与报告正文都不放警示文字**：模型触界、IPD 分段斜率未递减、logistic 不收敛、
+低负载点截断这类判断只打印在运行窗口（双击 `adsorp.bat` 后停留的那个窗口）里，
+报告正文保持成品形态。
 逐点的可疑值（负吸附、Ce > C0、吸附率 > 100%）仍会进「数据质量清单」表——
 那是数据本身的问题，需要逐条核对。
 

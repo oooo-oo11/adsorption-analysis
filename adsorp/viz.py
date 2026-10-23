@@ -240,13 +240,26 @@ def plot_ipd(curves: dict, out: Path):
         handles = []
         if ipd:
             t = np.asarray(d["time_h"], float)
-            k = max(2, int(np.searchsorted(t, ipd["break_t_h"])))
-            h1, = ax.plot(s[:k], ipd["k_id1"] * s[:k] + ipd["C1"],
-                          color=S.INK, ls="-", lw=S.FIT_LW, label="Stage I", zorder=3)
-            h2, = ax.plot(s[k - 1:], ipd["k_id2"] * s[k - 1:] + ipd["C2"],
-                          color=S.PURPLE, ls="--", lw=S.FIT_LW, label="Stage II", zorder=3)
-            ax.axvline(np.sqrt(ipd["break_t_h"]), color=S.GRAY, ls=":", lw=0.9, zorder=1)
-            handles = [h1, h2]
+            brk = [ipd["break_t_h"]]
+            if "break2_t_h" in ipd:
+                brk.append(ipd["break2_t_h"])
+            cuts, ks = [0], []
+            for b in brk:
+                k = max((ks[-1] + 1) if ks else 2, int(np.searchsorted(t, b)))
+                ks.append(k)
+                cuts.append(k)
+            cuts.append(len(t))
+            style = [(S.INK, "-", "Stage I"), (S.PURPLE, "--", "Stage II"),
+                     (S.TEAL, "-.", "Stage III")]
+            # 每段多画一个点搭到下一段上，断点处两线相交、不留缝
+            for i, (color, ls, label) in enumerate(style[:len(brk) + 1]):
+                lo, hi = cuts[i], cuts[i + 1]
+                seg = slice(lo - 1 if i else 0, hi)
+                h, = ax.plot(s[seg], ipd[f"k_id{i + 1}"] * s[seg] + ipd[f"C{i + 1}"],
+                             color=color, ls=ls, lw=S.FIT_LW, label=label, zorder=3)
+                handles.append(h)
+            for b in brk:
+                ax.axvline(np.sqrt(b), color=S.GRAY, ls=":", lw=0.9, zorder=1)
 
         S.data_marker(ax, s, y, mineral, bg)
         top = _headroom(float(np.nanmax(y)), 0.0)

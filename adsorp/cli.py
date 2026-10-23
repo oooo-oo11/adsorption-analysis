@@ -32,7 +32,7 @@ def _load_source(a):
 def _cmd_run(a) -> int:
     run(data_dir=a.data_dir, template=a.template, out=a.out, solid=a.solid,
         config=a.config, names_file=a.names, make_figs=not a.no_figs,
-        reuse=a.reuse)
+        reuse=a.reuse, ipd_stages=a.ipd_stages)
     return 0
 
 
@@ -182,6 +182,9 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--no-figs", action="store_true", help="只出表，不重绘图")
     p.add_argument("--reuse", action="store_true",
                    help="复用 output/_analysis.pkl，只重绘图与报告")
+    p.add_argument("--ipd-stages", type=int, choices=(2, 3), default=2,
+                   help="颗粒内扩散分段数：2（默认，膜扩散→颗粒内扩散）"
+                        "或 3（膜扩散→颗粒内扩散→平衡，需 ≥10 个时间点）")
     p.set_defaults(func=_cmd_run)
 
     p = sub.add_parser("template", help="生成空白 Excel 模板")

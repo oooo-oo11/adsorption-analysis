@@ -248,31 +248,98 @@ def kinetics_data(data: pd.DataFrame, solid: float | dict | None) -> pd.DataFram
     return df
 
 
-def _ipd_piecewise(t, y):
-    """qt vs t^0.5 的两段线性拟合，返回断点与两段斜率/截距。"""
+IPD_STAGES = (2, 3)
+IPD_MIN_PTS = 3          # 每段至少几个点（2 点定一条直线，3 点才有一个残差自由度）
+
+
+def _ipd_breaks(n: int, stages: int, min_pts: int = IPD_MIN_PTS):
+    """枚举所有可行的分段位置（升序，保证同 SSR 时取靠前的断点）。"""
+    if stages == 2:
+        for k in range(min_pts, n - min_pts + 1):
+            yield [k]
+    else:
+        for k1 in range(min_pts, n - 2 * min_pts + 1):
+            for k2 in range(k1 + min_pts, n - min_pts + 1):
+                yield [k1, k2]
+
+
+def _ipd_piecewise(t, y, stages: int = 2, min_pts: int = IPD_MIN_PTS):
+    """qt vs t^0.5 的分段线性拟合，断点由总残差最小确定。
+
+    ``stages=2`` 两段（膜扩散 → 颗粒内扩散，或颗粒内扩散 → 平衡）；
+    ``stages=3`` 三段，对应教科书上的完整图像：膜扩散 / 颗粒内扩散 / 平衡。
+    三段要求 n ≥ 3×min_pts+1 = 10，每段至少 3 个点——点数更少时两段的
+    斜率标准误已经很大，硬切三段等于用噪声定断点，因此直接返回 None。
+    """
     s = np.sqrt(np.asarray(t, float))
     y = np.asarray(y, float)
     n = len(s)
-    if n < 7:
+    stages = int(stages)
+    if stages not in IPD_STAGES:
+        raise ValueError(f"IPD 分段数只能是 2 或 3，收到 {stages}")
+    if n < stages * min_pts + 1:
         return None
     best = None
-    for k in range(3, n - 2):
-        p1 = np.polyfit(s[:k], y[:k], 1)
-        p2 = np.polyfit(s[k:], y[k:], 1)
-        ssr = np.sum((np.polyval(p1, s[:k]) - y[:k]) ** 2) + \
-              np.sum((np.polyval(p2, s[k:]) - y[k:]) ** 2)
+    for brk in _ipd_breaks(n, stages, min_pts):
+        segs, ssr, start = [], 0.0, 0
+        for b in (*brk, n):
+            p = np.polyfit(s[start:b], y[start:b], 1)
+            ssr += np.sum((np.polyval(p, s[start:b]) - y[start:b]) ** 2)
+            segs.append(p)
+            start = b
         if best is None or ssr < best[0]:
-            best = (ssr, k, p1, p2)
-    ssr, k, p1, p2 = best
-    return {
-        "break_t_h": float(t[k]),
-        "k_id1": float(p1[0]), "C1": float(p1[1]),
-        "k_id2": float(p2[0]), "C2": float(p2[1]),
-        "ipd_ssr": float(ssr),
-    }
+            best = (ssr, brk, segs)
+    ssr, brk, segs = best
+    # 列序：断点在前、各段参数在后；两段时正好是原来的
+    # break_t_h / k_id1 / C1 / k_id2 / C2 / ipd_ssr，不多不少。
+    out = {"break_t_h": float(t[brk[0]])}
+    for i, b in enumerate(brk[1:], 2):
+        out[f"break{i}_t_h"] = float(t[b])
+    for i, p in enumerate(segs, 1):
+        out[f"k_id{i}"] = float(p[0])
+        out[f"C{i}"] = float(p[1])
+    out["ipd_ssr"] = float(ssr)
+    if stages == 3:
+        # 每段点数写进表里：读者一眼就能看出 3/3/4 这种分段是不是在拟合噪声
+        out["n_seg"] = "/".join(str(b - a) for a, b in
+                                zip([0, *brk], [*brk, n]))
+    return out
 
 
-def analyze_kinetics(df: pd.DataFrame, solid: float | None):
+def _ipd_warns(ipd: dict, stages: int = 2) -> list[str]:
+    """检查分段斜率是否按「先快后慢」递减（不含吸附剂名前缀）。"""
+    order = ("一", "二", "三")
+    k = [ipd[f"k_id{i}"] for i in range(1, stages + 1)]
+    if k[-1] <= 0:
+        return [f"颗粒内扩散第{order[stages - 1]}段斜率 ≤ 0，说明后期已无扩散控制特征，"
+                "该分段结果不宜解释。"]
+    bad = [i for i in range(stages - 1) if k[i + 1] >= k[i]]
+    if not bad:
+        return []
+    ks = "、".join(f"k{i + 1}={v:.4g}" for i, v in enumerate(k))
+    pairs = "、".join(f"第{order[i + 1]}段 ≥ 第{order[i]}段" for i in bad)
+    return [f"颗粒内扩散斜率未随分段递减（{ks}）——{pairs}，"
+            "与「先快后慢」的扩散图像不符；常见于该段点数不足或被噪声拉动，"
+            "该分段结果需谨慎解释。"]
+
+
+def ipd_fit(t, y, stages: int = 2):
+    """算一组数据的 IPD 分段，返回 ``(参数字典 | None, 提示列表)``。
+
+    与 ``_ipd_piecewise`` 的区别是带上斜率单调性判据，供流水线与
+    ``--reuse`` 重算共用，保证两条路径给出的提示一致。
+    """
+    ipd = _ipd_piecewise(t, y, stages)
+    if ipd is None:
+        n = len(np.asarray(t, float))
+        if stages > 2:
+            return None, [f"颗粒内扩散需 ≥{stages * IPD_MIN_PTS + 1} 个时间点"
+                          f"才能分 {stages} 段（现有 {n} 个），未分段。"]
+        return None, []
+    return ipd, _ipd_warns(ipd, stages)
+
+
+def analyze_kinetics(df: pd.DataFrame, solid: float | None, ipd_stages: int = 2):
     fits_rows, best_rows, ipd_rows, curves = [], [], [], {}
     warns = []
     if df.empty:
@@ -333,16 +400,16 @@ def analyze_kinetics(df: pd.DataFrame, solid: float | None):
                 "top": rank([r for r in results if r.converged])[:3],
             }
 
-        ipd = _ipd_piecewise(agg["time_h"].to_numpy(), agg["qt"].to_numpy())
+        ipd, ipd_warns = ipd_fit(agg["time_h"].to_numpy(), agg["qt"].to_numpy(),
+                                 ipd_stages)
+        for msg in ipd_warns:
+            warns.append(f"{mineral}-{background}：{msg}")
         if ipd:
             ipd.update({"mineral": mineral, "background": background,
                         "qt_unit": unit})
             ipd_rows.append(ipd)
             if (mineral, background) in curves:
                 curves[(mineral, background)]["ipd"] = ipd
-            if ipd["k_id2"] <= 0:
-                warns.append(f"{mineral}-{background}：颗粒内扩散第二段斜率 ≤ 0，"
-                             "说明后期无扩散控制特征，该分段结果不宜解释。")
 
         # 异常跳变
         u = agg["U"].to_numpy()

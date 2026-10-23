@@ -26,7 +26,8 @@ BASE = Path(__file__).resolve().parent.parent
 
 CACHE_KEYS = ["data", "qc", "eq", "ipd", "iso_fits", "iso_best", "curves_iso",
               "kin_fits", "kin_best", "curves_kin", "edge_params", "curves_edge",
-              "edge_cmp", "warns", "audit", "solid", "issues", "dr_ctx"]
+              "edge_cmp", "warns", "audit", "solid", "issues", "dr_ctx",
+              "ipd_stages"]
 
 
 def load_config(path: Path) -> dict:
@@ -123,6 +124,28 @@ def _template_qc(cfg_t: dict) -> pd.DataFrame:
     return qc
 
 
+def _rederive_ipd(curves: dict, stages: int, warns: list[str]):
+    """用缓存里的曲线聚合值重算 IPD 分段，返回 ``(表, 提示列表)``。
+
+    只做 polyfit，不重新拟合动力学模型，所以 ``--reuse --ipd-stages`` 是秒级。
+    曲线字典同时被就地更新，重绘时才画得对新分段。
+    """
+    rows = []
+    for (mineral, background), c in curves.items():
+        d = c.get("data")
+        if d is None or len(d) == 0:
+            continue
+        ipd, msgs = analyze.ipd_fit(d["time_h"].to_numpy(), d["qt"].to_numpy(), stages)
+        warns.extend(f"{mineral}-{background}：{m}" for m in msgs)
+        c.pop("ipd", None)
+        if ipd:
+            ipd.update({"mineral": mineral, "background": background,
+                        "qt_unit": c.get("unit") or ""})
+            rows.append(ipd)
+            c["ipd"] = ipd
+    return pd.DataFrame(rows), warns
+
+
 def run(*, data_dir: str | Path | None = None,
         template: str | Path | None = None,
         out: str | Path = "output",
@@ -131,6 +154,7 @@ def run(*, data_dir: str | Path | None = None,
         names_file: str | Path | None = "names.json",
         make_figs: bool = True,
         reuse: bool = False,
+        ipd_stages: int = 2,
         verbose: bool = True) -> dict:
     """跑完整条流水线，返回各产物路径与关键表。"""
     def log(msg: str):
@@ -176,6 +200,16 @@ def run(*, data_dir: str | Path | None = None,
                 analyze.kinetics_data(st["data"], _solid),
                 analyze.edge_data(st["data"]),
                 st.get("qc", pd.DataFrame()))
+        # 缓存的 IPD 是按上次的分段数算的。这次要求变了就重算分段（纯算术，
+        # 不碰模型拟合），同时把这批"：颗粒内扩散…"的旧提示换掉，
+        # 否则报告里的表和图是新的、控制台里的告警还是旧的。
+        cached_stages = int(st.get("ipd_stages") or 2)
+        if cached_stages != ipd_stages:
+            log(f"      缓存的 IPD 为 {cached_stages} 段，改按 {ipd_stages} 段重算")
+            st["ipd"], st["warns"] = _rederive_ipd(
+                st.get("curves_kin") or {}, ipd_stages,
+                [w for w in (st.get("warns") or []) if "：颗粒内扩散" not in w])
+            st["ipd_stages"] = ipd_stages
         return _finish(out, make_figs, verbose, {k: st.get(k) for k in CACHE_KEYS})
 
     cfg_t: dict = {}
@@ -255,7 +289,8 @@ def run(*, data_dir: str | Path | None = None,
 
     log("[3/5] 拟合等温线、动力学与吸附边")
     iso_fits, iso_best, curves_iso, w1 = analyze.analyze_isotherms(iso, solid)
-    kin_fits, kin_best, ipd, curves_kin, w2 = analyze.analyze_kinetics(kin, solid)
+    kin_fits, kin_best, ipd, curves_kin, w2 = analyze.analyze_kinetics(
+        kin, solid, ipd_stages)
     if not kin_best.empty:
         r2map = kin_best.set_index(["mineral", "background"])["R2"].to_dict()
         eq["fit_R2"] = [r2map.get((r["mineral"], r["background"]), np.nan)
@@ -279,7 +314,8 @@ def run(*, data_dir: str | Path | None = None,
                  iso_fits=iso_fits, iso_best=iso_best, curves_iso=curves_iso,
                  kin_fits=kin_fits, kin_best=kin_best, curves_kin=curves_kin,
                  edge_params=edge_params, curves_edge=curves_edge, edge_cmp=edge_cmp,
-                 warns=warns, audit=audit, solid=solid, issues=issues, dr_ctx=dr_ctx)
+                 warns=warns, audit=audit, solid=solid, issues=issues, dr_ctx=dr_ctx,
+                 ipd_stages=ipd_stages)
     with cache.open("wb") as fh:
         pickle.dump(state, fh)
     return _finish(out, make_figs, verbose, state)
@@ -348,7 +384,7 @@ def _finish(out: Path, make_figs: bool, verbose: bool, st: dict) -> dict:
     html = report.write_html(out, data, qc, iso_best, iso_fits, kin_best, kin_fits,
                              ipd, edge_params, edge_cmp, curves_iso, curves_kin,
                              solid, audit=audit, issues=issues, warns=warns,
-                             dr_ctx=dr_ctx)
+                             dr_ctx=dr_ctx, ipd_stages=st.get("ipd_stages", 2))
     xlsx = report.write_excel(out, data, qc, iso_fits, iso_best, kin_fits, kin_best,
                               ipd, eq, edge_params, edge_cmp, audit=audit)
 

@@ -540,7 +540,8 @@ def _model_legend_table() -> pd.DataFrame:
 
 def write_html(out: Path, data, qc, iso_best, iso_fits, kin_best, kin_fits, ipd,
                edge_params, edge_cmp, curves_iso, curves_kin,
-               solid, audit=None, issues=None, warns=None, dr_ctx=None):
+               solid, audit=None, issues=None, warns=None, dr_ctx=None,
+               ipd_stages: int = 2):
     fig_dir = out / "figures"
     n_issue = 0 if issues is None or issues.empty else len(issues)
     # "有效数据点"按真正参与计算的点数算：整行有记录但 Ce 为空（没测/已删）
@@ -555,10 +556,26 @@ def write_html(out: Path, data, qc, iso_best, iso_fits, kin_best, kin_fits, ipd,
     ]
     kpi_html = "".join(f'<div class="kpi"><b>{v}</b><span>{k}</span></div>' for v, k in kpis)
 
-    # 组级提示只打印在控制台与 run.log，不进报告正文：报告是给读者看的成品，
+    # 组级提示只打印在控制台（运行窗口），不进报告正文：报告是给读者看的成品，
     # 逐条罗列"某组 R² 偏低""曲线交叉"会让正文变成调试日志。
     # 逐点可疑值仍在下面的「数据质量清单」里列出（那是数据本身的问题）。
     warns_html = ""
+
+    # IPD 分段数：表里有 k_id3 就是三段；没有结果表时按本次请求的段数说，
+    # 免得"要了 3 段但每组点数都不够、表空着"时图注还写"两段"。
+    _ipd3 = (("k_id3" in ipd.columns) if ipd is not None and not ipd.empty
+             else int(ipd_stages or 2) == 3)
+    _ipd_label = "三段" if _ipd3 else "两段"
+    _ipd_cols = (["mineral", "background", "break_t_h", "k_id1", "C1", "k_id2", "C2"]
+                 + (["break2_t_h", "k_id3", "C3", "n_seg"] if _ipd3 else []))
+    _ipd_rename = {"mineral": "吸附剂", "background": "背景",
+                   "break_t_h": "断点1 t/h" if _ipd3 else "断点 t/h",
+                   "break2_t_h": "断点2 t/h", "n_seg": "各段点数"}
+    _ipd_note = ('<p class="cap">分段位置由总残差最小自动确定，每段至少 3 个点。'
+                 "<b>n_seg 是各段点数</b>：某段只有 3 个点时，该段斜率的标准误很大，"
+                 "只宜作趋势示意，不作为结论引用；要写进论文请先在该时间段补做重复点。"
+                 "斜率应逐段递减（膜扩散 → 颗粒内扩散 → 平衡），未递减的分组会在运行窗口给出提示。</p>"
+                 if _ipd3 else "")
 
     issues_html = ""
     if issues is not None and not issues.empty:
@@ -784,13 +801,12 @@ Elovich 的 α/β 与 Bangham 的 k<sub>B</sub> 同样随容量标度改变—�
 跨口径比较速率常数前必须先统一 m/V。
 对每组数据同时拟合全部动力学模型，并分段拟合 qt–t<sup>0.5</sup> 判别颗粒内扩散阶段。</p>
 {_img_switch(fig_dir, "kinetics", "kinetics_log", "图 3 动力学曲线（误差棒为 SD，仅平行样才画）、AICc 最优模型及 PFO / PSO 参照；横轴为时间，默认线性坐标，可在图上方切换为对数坐标")}
-{_img(fig_dir / "ipd.png", "图 4 颗粒内扩散分段拟合；两段直线的交点即转折时间")}
+{_img(fig_dir / "ipd.png", f"图 4 颗粒内扩散分段拟合；{_ipd_label}直线的交点即转折时间")}
 <h3>全部模型参数（组内按 R² 降序）</h3>
 {_table(_all_param_rows(kin_fits, "kinetics"), allow_html=("参数",))}
 <h3>颗粒内扩散参数</h3>
-{_table(ipd, ["mineral", "background", "break_t_h", "k_id1", "C1", "k_id2", "C2"],
-        rename={"mineral": "吸附剂", "background": "背景", "break_t_h": "断点 t/h",
-                "k_id1": "k_id1", "C1": "C1", "k_id2": "k_id2", "C2": "C2"})}
+{_ipd_note}
+{_table(ipd, _ipd_cols, rename=_ipd_rename)}
 <details><summary>展开：原始动力学拟合表（含 95% 置信区间与全部误差函数）</summary>
 <div class="scroll">{_table(kin_fits)}</div></details>
 
