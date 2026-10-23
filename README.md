@@ -146,6 +146,23 @@ adsorp.bat run
 
 同一份脚本也可作为投稿时的补充材料（审稿人可自行复算）。
 
+### 独立拟合脚本：`docs/reference/fit_all_models.m`
+
+`matlab_verify.m` 是**核对**用的：数据已内嵌，只能复算那一次的结果。
+如果要在 MATLAB 里从 Excel 模板**独立完成一遍全部分析**，用这个：
+
+```matlab
+% 放到任意目录，确认 CFG.data_file 指向模板（留空则自动查找 templates/），按 F5
+```
+
+- 只读模板的 `Data` + `Settings` 两张表，自己算 Ce / qe / 固液比，不依赖 Python 的任何中间产物；
+- 7 个等温线模型（D-R 只在填了 `molar_mass_g_per_mol` 时才跑）、5 个动力学模型、
+  两段 IPD、4 参数 pH 边 logistic 全部拟合；
+- 每个模型输出参数、SSE、R²、adj R²、RMSE、AICc，并标注参数是否触界；
+- 多起点 `fminsearch`（Nelder-Mead），参数在对数空间搜索保证为正，
+  **不需要 Optimization Toolbox / Curve Fitting Toolbox**，只用基础 MATLAB；
+- 结果同时写入模板同目录的 `fit_results.xlsx`。
+
 ---
 
 ## 5. Excel 模板：需要填什么
@@ -356,7 +373,7 @@ AICc 而非 R² 用于选模型：多一个参数必然抬高 R²，AICc 会惩�
 │
 ├─ docs/
 │  ├─ 命令速查.txt
-│  └─ reference/              ← MATLAB 独立实现（交叉验证用）
+│  └─ reference/              ← MATLAB：fit_all_models.m（读模板独立跑）、拟合方法参考
 │
 ├─ _archive/                  ← 归档区：仅本机，不随仓库同步
 │  ├─ README.md               归档清单与恢复方法
