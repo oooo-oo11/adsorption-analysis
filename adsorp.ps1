@@ -42,6 +42,9 @@ $pyPrefix = @()
 if ($env:ADSORP_PYTHON -and (Test-Path -LiteralPath $env:ADSORP_PYTHON)) {
     if (Test-PythonDeps $env:ADSORP_PYTHON) { $py = $env:ADSORP_PYTHON }
 }
+if (-not $py -and (Test-Path -LiteralPath '.\python\python.exe')) {
+    if (Test-PythonDeps '.\python\python.exe') { $py = '.\python\python.exe' }
+}
 if (-not $py -and (Test-Path -LiteralPath '.\.venv\Scripts\python.exe')) {
     if (Test-PythonDeps '.\.venv\Scripts\python.exe') { $py = '.\.venv\Scripts\python.exe' }
 }
@@ -51,13 +54,10 @@ if (-not $py -and (Get-Command py -ErrorAction SilentlyContinue)) {
 if (-not $py -and (Get-Command python -ErrorAction SilentlyContinue)) {
     if (Test-PythonDeps 'python') { $py = 'python' }
 }
-if (-not $py) {
-    $fallback = Join-Path $env:USERPROFILE '.workbuddy\binaries\python\envs\default\Scripts\python.exe'
-    if ((Test-Path -LiteralPath $fallback) -and (Test-PythonDeps $fallback)) { $py = $fallback }
-}
 
 if (-not $py) {
     Write-Host '[错误] 没有找到可用的 Python（需要 numpy / pandas / scipy / matplotlib / openpyxl）。' -ForegroundColor Red
+    Write-Host '  本交付包自带 python\ ，若该目录缺失，可以：'
     Write-Host '  1) 安装 Python 3.10 或更高版本，安装时勾选 Add python.exe to PATH'
     Write-Host '  2) python -m venv .venv'
     Write-Host '     .\.venv\Scripts\python -m pip install -r requirements.txt'

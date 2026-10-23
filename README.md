@@ -6,11 +6,11 @@
 
 ## 1. 快速开始
 
-三种启动方式，产物完全相同，按习惯挑一个。
+**不需要安装 Python。** 包内自带便携版解释器（`python\` 目录），解压后双击即可。
 
 **① 双击**（最省事，不需要任何命令行基础）
 
-在资源管理器里双击 `adsorp.bat`。脚本会自动找可用的 Python、跑完整流程、结束后自动打开
+在资源管理器里双击 `adsorp.bat`。脚本会自动跑完整流程，结束后自动打开
 `output\报告.html`，窗口停在那里显示日志（按任意键关闭）。
 
 **② PowerShell**
@@ -38,9 +38,10 @@ cd /d C:\path\to\分析
 adsorp.bat run
 ```
 
-三个入口都会先探测 Python：`ADSORP_PYTHON` 环境变量 → `.venv\Scripts\python.exe` →
-`py -3` → `python`，逐个实测能否 `import numpy, pandas, scipy, matplotlib, openpyxl`，
-第一个通过的即被使用；都不行会明确报错并提示怎么装。
+三个入口都会先探测 Python：`ADSORP_PYTHON` 环境变量 → 包内 `python\python.exe` →
+`.venv\Scripts\python.exe` → `py -3` → `python`，逐个实测能否
+`import numpy, pandas, scipy, matplotlib, openpyxl`，第一个通过的即被使用；
+都不行会明确报错并提示怎么装。正常情况下走的就是包内那一个。
 
 ---
 
@@ -316,13 +317,17 @@ AICc 而非 R² 用于选模型：多一个参数必然抬高 R²，AICc 会惩�
 
 ```
 分析/
-├─ README.md                  ← 唯一入口文档（本文件）
+├─ 开始使用.txt               ← 拿到包先看这个（三步走）
+├─ README.md                  ← 完整文档（本文件）
 ├─ adsorp.bat                 ← Windows 一键入口（双击 / cmd）
 ├─ adsorp.ps1                 ← PowerShell 入口（与 bat 等价）
 ├─ run_analysis.py            ← 兼容入口（沿用旧的 python run_analysis.py 写法）
 ├─ config.json                ← 固液比 / 数据目录 / 默认值
 ├─ names.example.json         ← 名称映射的示例格式（要用时复制成 names.json）
 ├─ requirements.txt · pyproject.toml
+├─ build_package.py           ← 开发用：打交付包（dist/），运行时不参与
+│
+├─ python/                    ← 便携版 Python 3.13 + 已装依赖（删掉则改用系统 Python）
 │
 ├─ adsorp/                    ← 程序包：只放会被 import 的代码
 │  ├─ io.py                   仪器原始工作簿解析
@@ -363,9 +368,20 @@ AICc 而非 R² 用于选模型：多一个参数必然抬高 R²，AICc 会惩�
 └─ .workbuddy/                编辑器会话数据（不参与版本管理）
 ```
 
-根目录只有 9 个文件 + 6 个目录：入口（`README` / `adsorp.bat` / `adsorp.ps1` /
-`run_analysis.py`）、配置（`config.json` / `names.example.json` / `requirements.txt` /
-`pyproject.toml`），以及 `adsorp` `output` `data` `templates` `docs` `_archive`。
+根目录只有 11 个文件 + 7 个目录：入口（`开始使用.txt` / `README.md` / `adsorp.bat` /
+`adsorp.ps1` / `run_analysis.py`）、配置（`config.json` / `names.example.json` /
+`requirements.txt` / `pyproject.toml`）、交付脚本 `build_package.py`，以及 `python`
+`adsorp` `output` `data` `templates` `docs` `_archive`。
+
+### 9.4 打成交付包
+
+```powershell
+python build_package.py            # 含便携 Python，对方解压即用
+python build_package.py --no-python  # 轻量版，对方自己装 Python
+```
+
+产物在 `dist/`：一个目录 + 一个同名 zip。只收程序、模板、文档与 `python/`，
+个人数据（`data/*.xlsx`、`names.json`、`output/`、`_archive/`）不会进包。
 
 ### 9.1 归类规则：新文件该放哪
 
@@ -412,13 +428,18 @@ cd "C:\path\to\分析"
 
 ## 10. 环境
 
-```bash
-pip install -r requirements.txt
-```
+**开箱即用**：交付包内 `python\` 是一份 Windows 64 位便携版 Python 3.13（embeddable
+发行版），numpy / pandas / scipy / matplotlib / openpyxl 已预装进去。解压双击 `adsorp.bat`
+即可，不写注册表、不改 PATH、不联网。
 
-依赖：pandas ≥ 2.0、numpy ≥ 1.24、scipy ≥ 1.10、matplotlib ≥ 3.7、openpyxl ≥ 3.1
-（读 `.xls` 另需 `xlrd`）。已在 Python 3.13 + pandas 3.0.6 + numpy 2.5.4 + scipy 1.18.1
-+ matplotlib 3.11.2 下验证。
+- 只支持 64 位 Windows 10 及以上；换到 ARM 或 32 位机器不适用。
+- 包内解释器由 `build_package.py` 生成，出处：
+  `python-3.13.9-embed-amd64.zip` + `get-pip.py` + `pip install -r requirements.txt`。
+- 想用自己装的 Python：把 `python\` 目录整个删掉即可，启动脚本会自动回退到
+  `.venv` → `py -3` → `python`；也可以设 `ADSORP_PYTHON` 指定解释器。
+
+依赖版本：pandas ≥ 2.0、numpy ≥ 1.24、scipy ≥ 1.10、matplotlib ≥ 3.7、openpyxl ≥ 3.1。
+已在 Python 3.13 + pandas 3.0.6 + numpy 2.5.4 + scipy 1.18.1 + matplotlib 3.11.2 下验证。
 
 字体：全图统一 Times New Roman——包括 mathtext 公式（`mathtext.fontset=custom`，
 `C_e`、`Q_t`、`t^0.5`、`R²` 都是新罗马），刻度、图例、面板标题同款。

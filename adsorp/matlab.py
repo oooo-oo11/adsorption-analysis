@@ -348,7 +348,14 @@ def write_verify_script(path: Path, curves_iso: dict, curves_kin: dict,
          # 用占位符替换把 D-R 的常数写成与 Python 端一致的数值。
          .replace("{r_gas}", f"{R_GAS:.9g}")
          .replace("{dr_t}", f"{DR_CONTEXT['temperature']:.6g}")
-         .replace("{dr_m}", f"{DR_CONTEXT['molar_mass']:.6g}"))
+         .replace("{dr_m}", f"{DR_CONTEXT['molar_mass']:.6g}"
+                           if DR_CONTEXT.get("molar_mass") else "NaN"))
+    if not DR_CONTEXT.get("molar_mass"):
+        # 没填摩尔质量时 D-R 在 Python 端已被剔除，MATLAB 端保持一致：
+        # 移掉模型表里那一行，避免复核脚本算出一列 NaN 让人误以为是实现差异。
+        text = "\n".join(ln for ln in text.splitlines()
+                         if "'Dubinin-Radushkevich'" not in ln)
+        text = text.replace("M = NaN;", "M = NaN;  % 未提供吸附质摩尔质量，D-R 已略去")
     # % 在 f-string 里已被转义；这里把 MATLAB 的注释符还原（避免 %% 出现在输出）
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)

@@ -29,3 +29,7 @@ names.json
 
 # 输出目录整体忽略（报告里含实验数据）
 /output/
+
+# 交付用的便携 Python 与打包产物（由 build_package 脚本生成，不进版本库）
+/python/
+/dist/

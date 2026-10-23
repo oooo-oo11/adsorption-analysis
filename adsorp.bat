@@ -6,8 +6,10 @@ rem  Double-click    : find data, run full analysis, open report at the end
 rem  adsorp.bat run  : same, but do not open the report
 rem  adsorp.bat template / check / export / matlab : see README
 rem
-rem  Python lookup: ADSORP_PYTHON -> .venv -> py -3 -> python
+rem  Python lookup: ADSORP_PYTHON -> python\ (bundled) -> .venv -> py -3 -> python
 rem  Only interpreters that can import the required packages are used.
+rem  This package ships a portable Python in python\ , so a fresh machine
+rem  needs nothing installed.
 rem =====================================================================
 setlocal EnableExtensions
 cd /d "%~dp0"
@@ -21,10 +23,10 @@ set "PYTHONIOENCODING=utf-8"
 set "PY_CMD="
 
 if defined ADSORP_PYTHON call :try_exe "%ADSORP_PYTHON%"
+if not defined PY_CMD if exist "python\python.exe" call :try_exe "python\python.exe"
 if not defined PY_CMD if exist ".venv\Scripts\python.exe" call :try_exe ".venv\Scripts\python.exe"
 if not defined PY_CMD call :try_launcher py -3
 if not defined PY_CMD call :try_launcher python
-if not defined PY_CMD if exist "%USERPROFILE%\.workbuddy\binaries\python\envs\default\Scripts\python.exe" call :try_exe "%USERPROFILE%\.workbuddy\binaries\python\envs\default\Scripts\python.exe"
 
 if not defined PY_CMD goto :nopython
 
@@ -50,10 +52,12 @@ exit /b %RC%
 echo [ERROR] No usable Python found.
 echo         Requires: numpy pandas scipy matplotlib openpyxl
 echo.
-echo   Option 1: install Python 3.10+ with "Add python.exe to PATH" checked.
-echo   Option 2: python -m venv .venv
-echo             .venv\Scripts\python -m pip install -r requirements.txt
-echo   Option 3: set ADSORP_PYTHON to the full path of python.exe
+echo   This package normally ships its own Python in python\ .
+echo   If that folder is missing, either restore it or:
+echo     Option 1: install Python 3.10+ with "Add python.exe to PATH" checked
+echo     Option 2: python -m venv .venv
+echo               .venv\Scripts\python -m pip install -r requirements.txt
+echo     Option 3: set ADSORP_PYTHON to the full path of python.exe
 echo.
 if "%~1"=="" pause
 exit /b 1

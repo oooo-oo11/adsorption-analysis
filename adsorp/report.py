@@ -647,8 +647,9 @@ def write_html(out: Path, data, qc, iso_best, iso_fits, kin_best, kin_fits, ipd,
 
     # D-R 的 ε 依赖摩尔质量与温度，这两个值来自模板 Settings；
     # 必须在报告里写明本次用的是哪一组，否则换吸附质后 E 的偏移无从追溯。
+    # 没填摩尔质量时 D-R 已被剔除出候选模型，这里改成说明原因，不能格式化 None。
     dr_note = ""
-    if dr_ctx:
+    if dr_ctx and dr_ctx.get("molar_mass"):
         dr_note = (
             f'<div class="note">D-R 吸附势按 <b>M = {dr_ctx["molar_mass"]:g} g/mol</b>、'
             f'<b>T = {dr_ctx["temperature"]:g} K</b> 换算'
@@ -656,6 +657,12 @@ def write_html(out: Path, data, qc, iso_best, iso_fits, kin_best, kin_fits, ipd,
             "换吸附质或温度时，请在模板 Settings 改 <code>molar_mass_g_per_mol</code> / "
             "<code>temperature_K</code> 后重跑：ε ∝ T，M 与 T 一变，K<sub>DR</sub> 与 E "
             "就整体平移，而 E 的 8 kJ/mol 判据正落在这个量级上。</div>")
+    elif dr_ctx:
+        dr_note = (
+            '<div class="note">未填吸附质摩尔质量（模板 Settings 的 '
+            "<code>molar_mass_g_per_mol</code>），本次<b>不拟合 D-R 模型</b>——"
+            "它的吸附势 ε = RT·ln(1+1/C<sub>mol</sub>) 需要摩尔质量才能换算。"
+            "其余等温线模型不受影响；补上该值后重跑即可参与比较。</div>")
 
     audit_html = ""
     if audit is not None and not audit.empty:

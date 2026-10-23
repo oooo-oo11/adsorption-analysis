@@ -160,13 +160,39 @@ def write_template(path: str | Path) -> Path:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
 
+    # 示例行不只是占位：行数够跑通一次拟合，复制这份模板到 data/ 就能
+    # 看到完整的图与表（等温线 5 个浓度、动力学 6 个时间点、吸附边 6 个 pH）。
+    # 数值都是编的，正式用请整表替换。
+    def row(exp, mineral, c0, *, ce=None, conc=None, time=None, ph=None,
+            bg="0.01 M NaCl", ionic=0.01, dil=1, solid=2.0, rep=1):
+        return [exp, mineral, bg, ionic, c0, time, ph, ce, conc,
+                1.0, dil, solid, rep, "", False]
+
     example = [
-        # exp, mineral, background, ionic, C0, time, pH, Ce, conc, corr, dil, solid, rep, note, excl
-        ["isotherm", "Mineral A", "0.01 M NaCl", 0.01, 10, None, None, 7.82, None, 1.0, 1, 2.0, 1, "", False],
-        ["isotherm", "Mineral A", "0.01 M NaCl", 0.01, 10, None, None, 7.65, None, 1.0, 1, 2.0, 2, "", False],
-        ["isotherm", "Mineral B", "0.01 M NaCl", 0.01, 10, None, None, 5.10, None, 1.0, 1, 2.0, 1, "", False],
-        ["kinetics", "Mineral A", "0.01 M NaCl", 0.01, 10, 24, None, None, 102.4, 1.0, 50, 2.0, 1, "", False],
-        ["edge", "Mineral A", "0.01 M NaCl", 0.01, 10, None, 5.0, 1.25, None, 1.0, 1, 2.0, 1, "", False],
+        # 等温线：两条吸附剂曲线，其中 C0=10 做了两个平行样（图上会有误差棒）
+        row("isotherm", "Mineral A", 1, ce=0.34),
+        row("isotherm", "Mineral A", 3, ce=1.12),
+        row("isotherm", "Mineral A", 6, ce=2.58),
+        row("isotherm", "Mineral A", 10, ce=4.62, rep=1),
+        row("isotherm", "Mineral A", 10, ce=4.41, rep=2),
+        row("isotherm", "Mineral A", 20, ce=10.30),
+        row("isotherm", "Mineral B", 3, ce=1.85),
+        row("isotherm", "Mineral B", 6, ce=4.20, solid=1.0),
+        row("isotherm", "Mineral B", 10, ce=7.40, solid=1.0),
+        # 动力学：C0=10、稀释 50 倍，conc_ppb 是标线计算值
+        row("kinetics", "Mineral A", 10, conc=172.0, time=0.5, dil=50),
+        row("kinetics", "Mineral A", 10, conc=148.0, time=1, dil=50),
+        row("kinetics", "Mineral A", 10, conc=120.0, time=2, dil=50),
+        row("kinetics", "Mineral A", 10, conc=96.0, time=4, dil=50),
+        row("kinetics", "Mineral A", 10, conc=72.0, time=8, dil=50),
+        row("kinetics", "Mineral A", 10, conc=52.0, time=24, dil=50),
+        # 吸附边：pH 从 3 到 8
+        row("edge", "Mineral A", 10, ce=8.80, ph=3),
+        row("edge", "Mineral A", 10, ce=7.60, ph=4),
+        row("edge", "Mineral A", 10, ce=5.40, ph=5),
+        row("edge", "Mineral A", 10, ce=3.20, ph=6),
+        row("edge", "Mineral A", 10, ce=2.40, ph=7),
+        row("edge", "Mineral A", 10, ce=2.20, ph=8),
     ]
     data = pd.DataFrame(example, columns=[c[0] for c in DATA_COLUMNS])
 
