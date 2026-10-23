@@ -19,6 +19,7 @@ import pandas as pd
 
 from . import analyze, names as N, report, style as S, viz
 from .io import has_workbooks, list_workbooks, read_all
+from .models import configure_dr
 from .template import read_template, split_workbooks
 
 BASE = Path(__file__).resolve().parent.parent
@@ -153,6 +154,14 @@ def run(*, data_dir: str | Path | None = None,
         log("[2/5] 复用上次的分析结果（reuse）")
         with cache.open("rb") as fh:
             st = pickle.load(fh)
+        # 重绘要用到两样"只存在于上次运行上下文"的东西，必须从缓存恢复，
+        # 否则 --reuse 画出来的图和 run 不一样：
+        #   1) 吸附剂/背景的登记顺序（决定配色与标记，缺失会退化成哈希取色）；
+        #   2) D-R 的摩尔质量与温度（缺失时最优模型是 D-R 就整个画不出来）。
+        if st.get("data") is not None and not st["data"].empty:
+            S.register_categories(st["data"]["mineral"], st["data"]["background"])
+        _dr = st.get("dr_ctx") or {}
+        configure_dr(_dr.get("molar_mass"), _dr.get("temperature"))
         # 审计规则可能随代码更新，这里用缓存的拟合表重算一遍（毫秒级），
         # 避免 --reuse 时报告里留着旧判定。
         st["audit"] = pd.concat(
@@ -231,7 +240,6 @@ def run(*, data_dir: str | Path | None = None,
     log(f"[2/5] 计算 Ce / qe / 吸附分数")
     # D-R 的 ε 依赖吸附质摩尔质量与温度，两者都在模板 Settings 里；
     # 这里在读数据后立即生效，后面的拟合与出图都用同一套常数。
-    from .models import configure_dr
     settings = (cfg_t.get("settings") or {}) if cfg_t else {}
     dr_ctx = configure_dr(settings.get("molar_mass_g_per_mol"),
                           settings.get("temperature_K"))

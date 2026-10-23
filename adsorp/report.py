@@ -768,7 +768,7 @@ def write_html(out: Path, data, qc, iso_best, iso_fits, kin_best, kin_fits, ipd,
 <p>对每组数据同时拟合全部等温线模型并按 AICc 排序；Ce 或 qe ≤ 0 的点超出模型定义域，
 自动跳过（各类模型的拟合点数见 <code>tables/等温线_全部模型.csv</code>）。</p>
 {_img_switch(fig_dir, "isotherm", "isotherm_log", iso_caption)}
-{_img(fig_dir / "residuals.png", "图 2 最优模型的相对残差–实测值；虚线为 ±10%。纵轴按残差的稳健范围（中位数 + 3×MAD）自适应，低负载点的相对误差会被检出限放大，个别点因此落在框外；原始残差见 tables/长表数据.csv")}
+{_img(fig_dir / "residuals.png", "图 2 最优模型的相对残差–实测值；颜色对应吸附剂、标记形状对应背景电解质，虚线为 ±10%。纵轴按残差的稳健范围（中位数 + 3×MAD）自适应，低负载点的相对误差会被检出限放大，个别点因此落在框外；原始残差见 tables/长表数据.csv")}
 <h3>全部模型参数（组内按 R² 降序）</h3>
 <p>ΔAICc 以同组最优模型为 0，≤2 表示与最优无实质差别；
 「判定」标出参数触界、参数共线（max|r|&gt;0.99）与多解（收敛率 &lt;0.5）——这三类情况的参数不可独立引用。</p>

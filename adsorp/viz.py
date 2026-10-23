@@ -375,10 +375,12 @@ def plot_qc(qc, out: Path):
 # --------------------------------------------------------------------------
 
 def plot_residuals(curves_iso: dict, curves_kin: dict, out: Path):
-    fig, axes = S.new_grid(2, 2, width_cm=17.2, height_cm=8.2, bottom=0.245)
+    # 图例现在是「吸附剂作标题 + 背景逐个列形状」，比原来单行多一行高度，
+    # 底部留白相应放大，否则标题会贴到 x 轴标签上。
+    fig, axes = S.new_grid(2, 2, width_cm=17.2, height_cm=8.5, bottom=0.29)
     panels = [(axes.ravel()[0], "a", curves_iso, "Isotherm", True),
               (axes.ravel()[1], "b", curves_kin, "Kinetics", False)]
-    shown = {}   # 按数据里出现的顺序记吸附剂，图例顺序才稳定
+    shown = []      # 按出现顺序记 (吸附剂, 背景)，图例顺序才稳定
     for ax, letter, curves, title, logx in panels:
         if not curves:
             ax.axis("off")
@@ -434,15 +436,45 @@ def plot_residuals(curves_iso: dict, curves_kin: dict, out: Path):
             flat = np.concatenate([x for x in xs if x.size])
             ax.set_xlim(float(np.nanmin(flat)) * 0.5, float(np.nanmax(flat)) * 2.0)
         # 截断显示与触界剔除的说明写在图注里，图上不再加红字。
-        for m, _ in used:
-            shown.setdefault(m)
+        for m, bg in used:
+            if (m, bg) not in shown:
+                shown.append((m, bg))
 
-    handles = [Line2D([], [], linestyle="none", marker="o", markersize=5.2,
-                      markerfacecolor=S.mineral_color(m), markeredgecolor=S.EDGE,
-                      label=N.mineral(m))
-               for m in shown]
+    handles, legend_title = _resid_legend(shown)
     if handles:
-        fig.legend(handles=handles, loc="lower center", ncol=len(handles),
+        kw = {}
+        if legend_title:
+            kw["title"] = legend_title
+            kw["title_fontsize"] = S.FONT_LEGEND
+        fig.legend(handles=handles, loc="lower center", ncol=min(len(handles), 3),
                    frameon=False, fontsize=S.FONT_LEGEND, handletextpad=0.35,
-                   columnspacing=1.8, bbox_to_anchor=(0.5, 0.005))
+                   columnspacing=1.8, bbox_to_anchor=(0.5, 0.005), **kw)
     S.save(fig, out)
+
+
+def _resid_legend(pairs):
+    """残差图的图例：颜色=吸附剂、形状=背景电解质，两个通道都要交代。
+
+    过去只按吸附剂登记一条「● 名称」，形状全靠形状猜——单一吸附剂、多个背景时，
+    图例里只有一种颜色却混着圆和方，读者自然会问「不是只有一个吸附剂吗」。
+
+    * 单一吸附剂 + 多背景：图例只列背景（形状），吸附剂名作标题；
+    * 多吸附剂：逐 (吸附剂, 背景) 组合列，避免一种颜色对多种形状却只有一条图例；
+    * 组合过多（>6）时退回按吸附剂列，否则图例比图还高。
+    """
+    mins = list(dict.fromkeys(m for m, _ in pairs))
+    bgs = list(dict.fromkeys(b for _, b in pairs))
+    if not mins:
+        return [], ""
+
+    def handle(m, b, label):
+        return Line2D([], [], linestyle="none", marker=S.bg_marker(b), markersize=5.2,
+                      markerfacecolor=S.mineral_color(m), markeredgecolor=S.EDGE,
+                      label=label)
+
+    if len(mins) == 1 and len(bgs) > 1:
+        m = mins[0]
+        return [handle(m, b, str(b)) for b in bgs], N.mineral(m)
+    if len(mins) > 1 and len(bgs) > 1 and len(pairs) <= 6:
+        return [handle(m, b, f"{N.mineral(m)} · {b}") for m, b in pairs], ""
+    return [handle(m, bgs[0], N.mineral(m)) for m in mins], ""
