@@ -33,3 +33,6 @@ names.json
 # 交付用的便携 Python 与打包产物（由 build_package 脚本生成，不进版本库）
 /python/
 /dist/
+
+# 本机部署笔记：含本机路径与部署日期，只在本地保留
+/本地部署说明.md

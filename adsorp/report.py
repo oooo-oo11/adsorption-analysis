@@ -601,33 +601,48 @@ def write_html(out: Path, data, qc, iso_best, iso_fits, kin_best, kin_fits, ipd,
             nm = names.mineral(str(m))
             if nm not in present_minerals:
                 present_minerals.append(nm)
-    if isinstance(solid, dict):
-        lookup = {names.mineral(str(k)): float(v) for k, v in solid.items()
-                  if isinstance(v, (int, float)) and np.isfinite(v) and v > 0}
-        have = [(m, lookup[m]) for m in present_minerals if m in lookup]
-        missing = [m for m in present_minerals if m not in lookup]
-    elif isinstance(solid, (int, float)) and np.isfinite(solid) and solid > 0:
-        have = [(m, float(solid)) for m in present_minerals]
-        missing = []
-    else:
-        have, missing = [], list(present_minerals)
-    pairs = "、".join(f"{m} {v:g} g/L" for m, v in have)
+    # 逐行值最具体：同一吸附剂在等温线与动力学里投加量可能不同，
+    # 只取字典里的第一个值会把概览写成单一数值（表里 2 和 1 混用时会误读）。
+    scalar = (float(solid) if isinstance(solid, (int, float))
+              and np.isfinite(solid) and solid > 0 else None)
+    row_vals: dict[str, list[float]] = {}
+    if scalar is None and "solid_g_per_L" in data:
+        _s = pd.to_numeric(data["solid_g_per_L"], errors="coerce")
+        _keep = (~data["exclude"].astype(bool)) if "exclude" in data else pd.Series(True, index=data.index)
+        for m, v, k in zip(data["mineral"], _s, _keep):
+            if k and pd.notna(v) and float(v) > 0:
+                vals = row_vals.setdefault(names.mineral(str(m)), [])
+                if all(abs(float(v) - x) > 1e-9 for x in vals):
+                    vals.append(float(v))
+    lookup = ({names.mineral(str(k)): float(v) for k, v in solid.items()
+               if isinstance(v, (int, float)) and np.isfinite(v) and v > 0}
+              if isinstance(solid, dict) else {})
+    have: list[tuple[str, str]] = []
+    missing: list[str] = []
+    for m in present_minerals:
+        if scalar is not None:
+            have.append((m, f"{scalar:g}"))
+        elif row_vals.get(m):
+            have.append((m, "/".join(f"{x:g}" for x in sorted(row_vals[m]))))
+        elif m in lookup:
+            have.append((m, f"{lookup[m]:g}"))
+        else:
+            missing.append(m)
+    pairs = "、".join(f"{m} {v} g/L" for m, v in have)
     miss_txt = "、".join(missing)
     if have and not missing:
         solid_line = (f"固液比 m/V 按吸附剂分别取值：{pairs}。qe = (C0−Ce)/(m/V)，单位为 mg/g。")
-        has_solid = True
+        qe_note = "纵轴为 mg/g"
     elif have:
         solid_line = (f"固液比 m/V：{pairs}；{miss_txt} 未提供固液比，"
                       "其吸附量以 (C0−Ce) 计，单位为 mg/L(悬浮液)。")
-        has_solid = False
+        qe_note = "纵轴按组区分：有固液比的为 mg/g，其余为 mg/L(悬浮液)"
     else:
         solid_line = (f"未提供固液比 m/V（{miss_txt or '数据中出现的吸附剂'}）："
                       "qe 记为 (C0−Ce)，单位为 mg/L(悬浮液)。"
-                      "在 config.json 的 solids_g_per_L 或模板 Settings 的 solid:<吸附剂> 行补入后重跑，"
-                      "即可换算为 mg/g。")
-        has_solid = False
-    qe_note = ("纵轴为 mg/g" if has_solid
-               else "纵轴以 mg/L(悬浮液) 计，未换算为 mg/g")
+                      "在 Data 表 solid_g_per_L 列（或 config.json 的 solids_g_per_L、"
+                      "模板 Settings 的 solid:<吸附剂> 行）补入后重跑，即可换算为 mg/g。")
+        qe_note = "纵轴以 mg/L(悬浮液) 计，未换算为 mg/g"
     files = [f for f in dict.fromkeys(data.get("file", [])) if isinstance(f, str)]
     if len(files) == 1:
         source_line = f"数据源：{files[0]}"

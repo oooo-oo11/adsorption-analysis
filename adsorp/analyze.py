@@ -58,7 +58,11 @@ def _solid_series(df: pd.DataFrame, solid) -> pd.Series:
     模板里逐行填的 ``solid_g_per_L`` 是这一行真实的 m/V，比 Settings 里
     按吸附剂给的单值更具体。两者的优先级若写反（Settings 覆盖行内值），
     表内写 2、Settings 写 1 时 qe 会整整放大一倍，且报告里看不出来。
+
+    ``--solid`` 传进来的标量是显式覆盖，压过行内值（否则命令行开关形同虚设）。
     """
+    if isinstance(solid, (int, float)) and np.isfinite(solid) and solid > 0:
+        return pd.Series(float(solid), index=df.index, dtype="float")
     fallback = pd.Series([_solid_for(solid, m) for m in df["mineral"]],
                          index=df.index, dtype="float")
     if "solid_g_per_L" not in df:

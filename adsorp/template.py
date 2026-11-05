@@ -82,7 +82,7 @@ DATA_COLUMNS = [
     ("conc_ppb", "127.5", "标线计算/ppb（不是荧光值）。无 Ce_ppm 时按下方公式换算"),
     ("corr_factor", "1.0", "校正因子（标线/漂移校正）"),
     ("dilution", "600", "稀释倍数，留空取 Settings 默认值"),
-    ("solid_g_per_L", "3.0", "固液比 m/V。留空取 Settings 中该吸附剂的值"),
+    ("solid_g_per_L", "3.0", "固液比 m/V (g/L)。填了则纵轴为 mg/g；留空取 Settings，仍无为 mg/L(悬浮液)"),
     ("replicate", "1", "平行样编号，可留空"),
     ("note", "并行样 2", "备注；含 异常/存疑/加错/未取样/可疑/重测 的行只提示，不自动剔除"),
     ("exclude", "FALSE", "唯一能剔除数据的开关：填 TRUE 则该行不参与拟合与绘图"),
@@ -114,7 +114,8 @@ README_LINES = [
     ("3. 等温线的 C0_ppm 逐行必填；动力学/吸附边可留空，按同组已有值或 Settings 的 default_C0_kinetics/edge 补齐。", ""),
     ("4. mineral 列直接填「英文名」（如 Mineral A、Goethite）：图上就用这个名字，不再经脚本翻译。"
      "以后新增吸附剂，照这个写法填即可，不必改 names.json。", ""),
-    ("5. Settings 表填全局默认值；固液比 m/V (g/L) 可写在 Settings 的 solid:<名称> 行，也可逐行填在 Data 表。", ""),
+    ("5. Settings 表填全局默认值；固液比 m/V (g/L) 可写在 Settings 的 solid:<名称> 行（名称要与 Data 的 mineral 一致），"
+     "也可逐行填在 Data 表。填了固液比，纵轴就是 mg/g；一处都没填则按 mg/L(悬浮液) 计。", ""),
     ("6. 保存后执行：adsorp.bat run --template templates/吸附数据模板.xlsx --out output（在项目目录下；等价于 python -m adsorp.cli run）", ""),
     ("7. 结果：output/报告.html（单文件自包含，图表与 PDF 均内嵌，可单独转发）、结果汇总.xlsx、figures/（PNG+PDF）、tables/（CSV）。", ""),
     ("8. 背景电解质按字符串分组，写法要保持一致（如统一写 0.01 M NaCl）；全角/半角、上标下标的差异会被当成两组。", ""),

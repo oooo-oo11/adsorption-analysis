@@ -66,12 +66,22 @@ def resolve_solid(cfg: dict, override: float | None) -> float | dict | None:
 def _merge_template_solids(data: pd.DataFrame, cfg_t: dict,
                            solid: float | dict | None,
                            io_warn: list[str]):
-    """把模板 Settings 的 ``solid:<名称>`` 合并进本次固液比。
+    """解析本次运行实际使用的固液比 m/V (g/L)。
 
-    模板里的值代表本次数据集，优先于 config.json 的默认字典；``--solid`` 标量
-    仍然最高（调用方已处理）。键允许写中文，统一经 names 映射后再合并。
+    优先级（高 → 低）：``--solid`` 标量 > 模板 Data 表 ``solid_g_per_L`` 逐行值
+    > 模板 Settings 的 ``solid:<名称>`` > config.json 的 ``solids_g_per_L``。
+    全都取不到时返回 None，容量按 mg/L(悬浮液) 计。
+
+    Data 表的逐行值最具体（同一次运行里等温线与动力学的投加量可能不同），
+    所以它压过 Settings；Settings 的键允许写中文，经 names 映射后对齐。
     """
-    tmpl_solids = {}
+    tmpl_solids: dict[str, float] = {}
+    # config 里写成 "4" 这类字符串时先归一到 float，免得后面 {**solid} 直接抛错
+    if solid is not None and not isinstance(solid, dict):
+        try:
+            solid = float(solid)
+        except (TypeError, ValueError):
+            solid = None
     for k, v in (cfg_t.get("solids_g_per_L") or {}).items():
         try:
             fv = float(v)
@@ -79,41 +89,88 @@ def _merge_template_solids(data: pd.DataFrame, cfg_t: dict,
             continue
         if np.isfinite(fv) and fv > 0:
             tmpl_solids[N.mineral(str(k))] = fv
-    if tmpl_solids:
-        # 名称全对不上＝等于没填：Settings 写 solid:钙锰矿、Data 全写 Todorokite 时，
-        # 固液比会静默丢失、qe 退化成 mg/L(悬浮液)。只有"一个都对不上"才报警，
-        # 否则 Settings 里多带的其它体系（本次数据没用到）会造成无谓的噪声。
-        present = {str(m) for m in data["mineral"].dropna().unique()} if "mineral" in data else set()
-        if present and not (set(tmpl_solids) & present):
-            io_warn.append(
-                "Settings 的固液比没匹配到数据里的吸附剂名："
-                + "、".join(f"solid:{k}" for k in sorted(tmpl_solids)[:5])
-                + f"；数据中是 {'、'.join(sorted(present)[:6])}。"
-                "两边写成同一个名字（或在 names.json 里建立映射）才会生效，"
-                "否则 qe 按 mg/L(悬浮液) 计算。")
-        if solid is None:
-            solid = tmpl_solids
-        elif isinstance(solid, dict):
-            solid = {**solid, **tmpl_solids}
-    if solid is None and "solid_g_per_L" in data:
-        per_row = {}
+
+    per_row: dict[str, float] = {}
+    if "solid_g_per_L" in data:
         for m, v in zip(data["mineral"], data["solid_g_per_L"]):
-            if pd.notna(v):
-                per_row.setdefault(m, float(v))
-        solid = per_row or None
-    # 逐行固液比与 Settings 冲突时说明一句：现在行内值优先（更具体），
+            try:
+                fv = float(v)
+            except (TypeError, ValueError):
+                continue
+            if np.isfinite(fv) and fv > 0:
+                per_row.setdefault(m, fv)
+
+    # 名称全对不上＝等于没填：Settings 写 solid:钙锰矿、Data 全写 Todorokite 时，
+    # 固液比会静默丢失、qe 退化成 mg/L(悬浮液)。只有"一个都对不上"才报警，
+    # 否则 Settings 里多带的其它体系（本次数据没用到）会造成无谓的噪声。
+    present = ({str(m) for m in data["mineral"].dropna().unique()}
+               if "mineral" in data else set())
+    if tmpl_solids and present and not (set(tmpl_solids) & present):
+        names = "、".join(f"solid:{k}" for k in sorted(tmpl_solids)[:5])
+        if per_row:
+            how = ("本次按 --solid 的覆盖值计算。" if isinstance(solid, (int, float))
+                   else "本次按 Data 表 solid_g_per_L 的逐行值计算。")
+            io_warn.append(
+                f"Settings 的固液比键名与数据里的吸附剂名对不上（{names} vs "
+                f"{'、'.join(sorted(present)[:6])}）；" + how)
+        else:
+            io_warn.append(
+                "Settings 的固液比没匹配到数据里的吸附剂名：" + names
+                + f"；数据中是 {'、'.join(sorted(present)[:6])}。"
+                "两边写成同一个名字（或在 names.json 里建立映射），"
+                "或直接在 Data 表 solid_g_per_L 列逐行填，才会生效，"
+                "否则 qe 按 mg/L(悬浮液) 计算。")
+
+    # config → 模板 Settings：模板值代表本次数据集，覆盖 config 的默认字典；
+    # --solid 标量最高，不参与覆盖。
+    if tmpl_solids:
+        if isinstance(solid, dict):
+            solid = {**solid, **tmpl_solids}
+        elif solid is None:
+            solid = dict(tmpl_solids)
+
+    # 逐行值与上一级不同时说明一句：行内值更具体，最终以它为准，
     # 但填表人可能以为 Settings 会覆盖，qe 差一倍却看不出来源。
-    if "solid_g_per_L" in data and isinstance(solid, dict):
-        conflicts = sorted({
-            f"{m}：表内 {float(v):g}、Settings {s:g}"
-            for m, v in zip(data["mineral"], data["solid_g_per_L"])
-            if pd.notna(v) and (s := analyze._solid_for(solid, m)) is not None
-            and abs(float(v) - s) > 1e-9})
+    if per_row and isinstance(solid, (int, float)):
+        io_warn.append(
+            f"--solid {float(solid):g} g/L 覆盖了 Data 表里的逐行固液比，"
+            "本次全部按该值换算。")
+    if per_row and not isinstance(solid, (int, float)):
+        base = solid or {}
+        conflicts = sorted(
+            f"{m}：表内 {v:g}、Settings/config {s:g}"
+            for m, v in per_row.items()
+            if (s := analyze._solid_for(base, m)) is not None and abs(v - s) > 1e-9)
         if conflicts:
             io_warn.append("固液比在 Data 表与 Settings 中数值不同，已按 Data 表逐行值计算："
                            + "；".join(conflicts[:5])
                            + ("…" if len(conflicts) > 5 else ""))
+        solid = {**base, **per_row}
     return solid
+
+
+def _unit_hint(data: pd.DataFrame, solid) -> str:
+    """本次运行容量单位的一句话说明（控制台用）。"""
+    if isinstance(solid, (int, float)) and np.isfinite(solid) and solid > 0:
+        return f"mg/g（--solid {float(solid):g} g/L，覆盖表内固液比）"
+    if "solid_g_per_L" in data:
+        v = pd.to_numeric(data["solid_g_per_L"], errors="coerce")
+        v = v[v > 0]
+        if len(v):
+            uniq = sorted({round(float(x), 6) for x in v.unique()})
+            vals = "、".join(f"{x:g}" for x in uniq[:3]) + ("…" if len(uniq) > 3 else "")
+            return f"mg/g（Data 表逐行固液比 {vals} g/L）"
+    if isinstance(solid, dict):
+        # 只报数据里真正匹配到的吸附剂：Settings 写了 solid:酸性水钠锰矿、
+        # 数据里是 ABIR 时并不生效，不能在这里谎报 mg/g。
+        present = (list(dict.fromkeys(str(m) for m in data["mineral"].dropna()))
+                   if "mineral" in data else list(solid))
+        pairs = [f"{m} {float(v):g}" for m in present
+                 if (v := analyze._solid_for(solid, m)) is not None]
+        if pairs:
+            more = "…" if len(pairs) > 4 else ""
+            return f"mg/g（Settings/config：{'、'.join(pairs[:4])}{more} g/L）"
+    return "mg/L(悬浮液)（未提供固液比；在 Data 表 solid_g_per_L 列填 m/V 即改为 mg/g）"
 
 
 def _template_qc(cfg_t: dict) -> pd.DataFrame:
@@ -268,6 +325,7 @@ def run(*, data_dir: str | Path | None = None,
                    "  · 也可以 adsorp.bat run --template 你的表.xlsx 显式指定。")
         raise SystemExit(msg)
     log(f"      {len(data)} 行有效数据；QC {len(qc)} 条")
+    log(f"      容量单位：{_unit_hint(data, solid)}")
     # 配色/形状按本次数据的名称登记，换体系不需要改代码
     S.register_categories(data["mineral"], data["background"])
 

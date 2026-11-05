@@ -10,11 +10,14 @@ from __future__ import annotations
 
 import argparse
 import sys
+import traceback
+from datetime import datetime
 from pathlib import Path
 
 import pandas as pd
 
-from .pipeline import BASE, load_config, resolve_data_dir, resolve_solid, run
+from .pipeline import (BASE, _merge_template_solids, _unit_hint, load_config,
+                       resolve_data_dir, resolve_solid, run)
 from .io import read_all
 from .template import read_template, write_from_data, write_template
 
@@ -123,8 +126,8 @@ def _cmd_check(a) -> int:
              .agg(rows=("_valid", "size"), valid=("_valid", "sum"))
              .reset_index())
         print(g.to_string(index=False))
-        solids = cfg_t.get("solids_g_per_L") or cfg.get("solids_g_per_L") or {}
-        print(f"\n固液比：{solids if solids else '未提供（容量以 mg/L 悬浮液计）'}")
+        eff = _merge_template_solids(data, cfg_t, resolve_solid(cfg, None), warns)
+        print(f"\n容量单位：{_unit_hint(data, eff)}")
 
         # 平行样：同组同条件出现多行 → 按均值 ± SD 合并（正常测定，不是错误）
         reps = []
@@ -161,6 +164,58 @@ def _cmd_check(a) -> int:
                 continue          # 上面已逐行点名，不必再报总数
             print("  -", w)
     return 0
+
+
+class _Tee:
+    """把控制台输出原样复制一份到日志文件。"""
+
+    def __init__(self, *streams):
+        self._streams = streams
+
+    def write(self, s):
+        for st in self._streams:
+            try:
+                st.write(s)
+            except Exception:
+                pass
+
+    def flush(self):
+        for st in self._streams:
+            try:
+                st.flush()
+            except Exception:
+                pass
+
+
+def _run_with_log(a) -> int:
+    """跑 ``run`` 的同时写 ``<out>/run.log``。
+
+    开始使用.txt 与常见问题都让用户「把 run.log 发过来」，但此前只打印到窗口，
+    关掉窗口就没了。这里同时接管 stdout / stderr：正常进度、警告、异常栈、
+    ``SystemExit`` 的说明都会落盘，窗口里的表现不变。
+    """
+    out = Path(a.out or "output")
+    try:
+        out.mkdir(parents=True, exist_ok=True)
+        fh = open(out / "run.log", "w", encoding="utf-8")
+    except OSError:
+        return a.func(a)
+    with fh:
+        fh.write(f"# adsorp run {datetime.now():%Y-%m-%d %H:%M:%S}\n")
+        fh.write(f"# argv: {' '.join(sys.argv)}\n\n")
+        old_out, old_err = sys.stdout, sys.stderr
+        sys.stdout, sys.stderr = _Tee(old_out, fh), _Tee(old_err, fh)
+        try:
+            return a.func(a)
+        except SystemExit as e:
+            if e.code not in (0, None):
+                fh.write(f"\n[退出 {e.code}] {e}\n")
+            raise
+        except BaseException:
+            traceback.print_exc(file=fh)
+            raise
+        finally:
+            sys.stdout, sys.stderr = old_out, old_err
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -215,6 +270,8 @@ def main(argv: list[str] | None = None) -> int:
     p.set_defaults(func=_cmd_export)
 
     args = ap.parse_args(argv)
+    if args.cmd == "run":
+        return _run_with_log(args)
     return args.func(args)
 
 

@@ -492,7 +492,13 @@ function [rows, best_lines] = run_isotherm(D, mask, models, CFG, rows, best_line
         [~, mqe] = agg_mean(C0, qe);
         ok = uC0 > 0 & mCe > 0 & mqe > 0;
         x = mCe(ok); y = mqe(ok);
-        unit = tern(all(~isnan(D.solid(sel))), 'mg/g', 'mg/L(悬浮液)');
+        if all(~isnan(D.solid(sel)))
+            unit = 'mg/g';                     % 组内每行都有 m/V
+        elseif any(~isnan(D.solid(sel)))
+            unit = 'mg/g 与 mg/L 混用';        % 部分行缺固液比，与 Python 的提示一致
+        else
+            unit = 'mg/L(悬浮液)';
+        end
         fprintf('\n  [%s]  n=%d  单位=%s\n', keys{k}, numel(x), unit);
         if numel(x) < CFG.min_pts
             fprintf('      点数不足 %d，跳过拟合\n', CFG.min_pts);
@@ -543,7 +549,13 @@ function [rows, best_lines] = run_kinetics(D, mask, models, CFG, rows, best_line
         [ut, mqt] = agg_mean(t(good), qt(good));
         ok = ut > 0;
         x = ut(ok); y = mqt(ok);
-        unit = tern(all(~isnan(D.solid(sel))), 'mg/g', 'mg/L(悬浮液)');
+        if all(~isnan(D.solid(sel)))
+            unit = 'mg/g';                     % 组内每行都有 m/V
+        elseif any(~isnan(D.solid(sel)))
+            unit = 'mg/g 与 mg/L 混用';        % 部分行缺固液比，与 Python 的提示一致
+        else
+            unit = 'mg/L(悬浮液)';
+        end
         fprintf('\n  [%s]  n=%d  单位=%s\n', keys{k}, numel(x), unit);
         if numel(x) < CFG.min_pts
             fprintf('      点数不足 %d，跳过拟合\n', CFG.min_pts);

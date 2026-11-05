@@ -6,7 +6,7 @@
 - 动力学 5 个模型：PFO / PSO / Elovich / Avrami / Bangham
 - 颗粒内扩散两段或三段、pH 边 4 参数 logistic、离子强度对比
 - 用 AICc 选模型，并给出参数触界、多起点收敛率、ΔAICc 等「能不能引用」的判据
-- 包内自带 Python，**解压双击即用**，不需要安装任何东西
+- 发布包内自带 Python，**解压双击即用**；源码仓库不含解释器，装依赖即可跑（见「环境」）
 
 ## 快速开始
 
@@ -15,7 +15,7 @@
 3. 结束自动打开 `output\报告.html`
 
 文件名、工作表排版都不用改：目录里有几个工作簿就读几个，实验类型（等温线 / 动力学 /
-吸附边 / QC）由表内内容自动判断，日志第一行会打印每个文件被判成了什么。
+吸附边 / QC）由表内内容自动判断，日志里会打印每个文件被判成了什么。
 
 PowerShell 里的等价写法：
 
@@ -36,10 +36,24 @@ PowerShell 里的等价写法：
 
 模板最少要填：`exp`（`isotherm` / `kinetics` / `edge` / `qc`）、`mineral`、`background`、
 `C0_ppm`（等温线必填），以及实测值（`Ce_ppm` 或 `conc_ppb`）；动力学加 `time_h`，
-吸附边加 `pH`。**固液比 m/V (g/L)** 写在 `Settings` 的 `solid:<吸附剂名>`——
-没有它容量参数只能报 mg/L(悬浮液)。
+吸附边加 `pH`。**固液比 m/V (g/L)** 可写在 `Settings` 的 `solid:<吸附剂名>`，也可逐行填在
+`Data` 的 `solid_g_per_L` 列——填了容量就是 mg/g，没有才是 mg/L(悬浮液)（详见下一节）。
 
 填完先自查：`.\adsorp.bat check --template 数据.xlsx`，几秒出结果，打印行数、分组、缺列与异常标记。
+
+## 容量单位：mg/g 还是 mg/L
+
+**模板里有固液比 m/V，纵轴就是 mg/g；一处都没有，按 mg/L(悬浮液) 计。** 取值优先级：
+
+1. 命令行 `--solid 4`（标量，覆盖一切）；
+2. Data 表 `solid_g_per_L` 列（逐行，最具体——同一次运行里等温线与动力学的投加量可以不同）；
+3. Settings 表 `solid:<吸附剂>` 行，键名必须与 Data 的 `mineral` 写法一致（可经 `names.json` 映射）；
+4. `config.json` 的 `solids_g_per_L` 字典。
+
+都用不上时 qe = (C0 − Ce)、qt = (C0 − Ct)，单位标 mg/L(悬浮液)。运行日志里会打印本次实际采用的口径，例如
+`容量单位：mg/g（Data 表逐行固液比 4 g/L）`，报告正文也会写明每一组用的 m/V。
+
+换算关系只有一条：`qe[mg/g] = qe[mg/L] ÷ (m/V)[g/L]`。
 
 ## 产物
 
@@ -48,11 +62,11 @@ PowerShell 里的等价写法：
 | 文件 | 内容 |
 |---|---|
 | `报告.html` | 单文件自包含（图与 PDF 全内嵌），可转发的成品 |
-| `报告.pdf` | 打印版（本机有 Chrome 时生成） |
 | `结果汇总.xlsx` | 11 张表：最优模型、全部模型、IPD、平衡时间、吸附边、QC、可靠性… |
 | `figures/*.png` `.pdf` | 300 dpi 位图（17.2 cm 宽）与矢量图 |
 | `tables/*.csv` | 与 Excel 同内容（utf-8-sig，Excel 直接打开不乱码） |
 | `matlab_verify.m` | 本次数据与全部模型内嵌，在 MATLAB 里复算并逐模型比对 SSE |
+| `run.log` | 本次运行的完整日志（进度、警告、异常栈），排错时发这个 |
 
 ## 常用命令
 
@@ -96,13 +110,16 @@ PowerShell 里的等价写法：
 ├─ templates/                空白模板
 ├─ output/                   成果，每次运行覆盖
 ├─ docs/                     命令速查、MATLAB 脚本、详细说明
-└─ python/                   便携版 Python（删掉则自动改用系统 Python）
+└─ python/                   便携版 Python（仅发布包；源码仓库没有，删掉则用系统 Python）
 ```
 
 ## 环境
 
-包内 `python\` 是 Windows 64 位便携版 Python 3.13，numpy / pandas / scipy / matplotlib /
+发布包内 `python\` 是 Windows 64 位便携版 Python 3.13，numpy / pandas / scipy / matplotlib /
 openpyxl 已预装，不写注册表、不改 PATH、不联网。只支持 64 位 Windows 10 及以上。
+
+源码仓库不含 `python\`，克隆后自建环境：`python -m venv .venv` →
+`.venv\Scripts\pip install -r requirements.txt`，之后 `.\adsorp.bat run` 会自动使用 `.venv`。
 
 想用自己装的 Python：删掉 `python\` 即可，启动脚本会依次找 `.venv` → `py -3` → `python`；
 也可以设 `ADSORP_PYTHON` 指定解释器。
