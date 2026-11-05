@@ -40,6 +40,7 @@ Invoke-Item output\报告.html           # 打开报告（cmd 用 start）
 ----------------------------------------------------------------
 .\adsorp.bat check --template 你的表.xlsx    # 先看行数/分组/缺列
 双击 adsorp.bat 后结论会留在运行窗口里        # 数据质量提示、模型触界等只打印到窗口
+output\run.log 里也有同一份完整日志            # 每次 run 自动生成，排错时发这个
 
 找不到 Python：设置环境变量指向解释器
   $env:ADSORP_PYTHON = "C:\Python313\python.exe"     # PowerShell

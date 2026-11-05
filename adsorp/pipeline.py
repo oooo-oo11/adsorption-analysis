@@ -419,6 +419,11 @@ def _finish(out: Path, make_figs: bool, verbose: bool, st: dict) -> dict:
         log("[4/5] 跳过绘图")
 
     log("[5/5] 导出报告")
+    # 与 figures/ 同口径：先清掉上次的 CSV，否则换了数据集后旧表（例如新数据
+    # 没有 QC 却还留着 QC.csv）会挂在新报告旁边，读者分不清是哪一次的。
+    tab_dir = out / "tables"
+    for p in tab_dir.glob("*.csv"):
+        p.unlink()
     tables = [("长表数据", data), ("等温线_最优", iso_best), ("等温线_全部模型", iso_fits),
               ("动力学_最优", kin_best), ("动力学_全部模型", kin_fits),
               ("颗粒内扩散", ipd), ("平衡时间", eq), ("吸附边参数", edge_params),
