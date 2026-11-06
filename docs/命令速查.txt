@@ -1,8 +1,9 @@
 吸附分析 · 命令速查
 ================================================================
 
-三种入口等价，任选其一：
-  双击 adsorp.bat           （无参 = run，结束自动打开报告）
+启动方式：
+  双击 adsorp.bat           （多份 Excel 时输入编号选一份，0 取消；单文件直跑）
+                           （分析成功后自动打开报告，取消不打开旧报告）
   .\adsorp.bat  run         （PowerShell，注意前面的 .\）
   adsorp.bat    run         （cmd）
 
@@ -12,7 +13,8 @@
 日常
 ----------------------------------------------------------------
 cd "C:\path\to\分析"                  # PowerShell 用 cd
-.\adsorp.bat run                       # 读 data\ 出结果
+.\adsorp.bat                           # 选择 data\ 中的一份 Excel
+.\adsorp.bat run                       # 整目录：仪器表合并；仅模板时取最新一份
 Invoke-Item output\报告.html           # 打开报告（cmd 用 start）
 
 .\adsorp.bat run --reuse               # 只重绘图与报告，不重跑拟合
@@ -22,7 +24,8 @@ Invoke-Item output\报告.html           # 打开报告（cmd 用 start）
 换数据
 ----------------------------------------------------------------
 # 方式 1：工作簿丢进 data\（按表内内容自动判断等温/动力学/吸附边，不用改文件名）
-.\adsorp.bat run
+.\adsorp.bat                           # 多文件时选择一份
+.\adsorp.bat run                       # 按原有规则处理整个目录，不弹选择
 
 # 方式 2：整理成长表模板
 .\adsorp.bat template                                    # 生成空白模板
@@ -39,7 +42,7 @@ Invoke-Item output\报告.html           # 打开报告（cmd 用 start）
 排错
 ----------------------------------------------------------------
 .\adsorp.bat check --template 你的表.xlsx    # 先看行数/分组/缺列
-双击 adsorp.bat 后结论会留在运行窗口里        # 数据质量提示、模型触界等只打印到窗口
+双击 adsorp.bat 后结论会留在运行窗口里        # 可查看数据质量提示、模型触界等
 output\run.log 里也有同一份完整日志            # 每次 run 自动生成，排错时发这个
 
 找不到 Python：设置环境变量指向解释器

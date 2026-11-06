@@ -2,7 +2,7 @@
 #  吸附数据分析 - PowerShell 入口
 #
 #  用法：
-#    .\adsorp.ps1                      自动找数据并跑完整分析
+#    .\adsorp.ps1                      多文件时选择一份，单文件直接分析
 #    .\adsorp.ps1 run --template ...   指定模板
 #    .\adsorp.ps1 check --template ... 只校验，不拟合
 #

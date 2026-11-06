@@ -352,11 +352,16 @@ def read_template(path: str | Path,
     * 完全空白的行：直接忽略。
     """
     path = Path(path)
-    xl = pd.ExcelFile(path, engine="openpyxl")
-    if "Data" not in xl.sheet_names:
-        raise ValueError(f"{path.name} 缺少 Data 工作表")
-
-    raw = xl.parse("Data")
+    with pd.ExcelFile(path, engine="openpyxl") as xl:
+        if "Data" not in xl.sheet_names:
+            raise ValueError(f"{path.name} 缺少 Data 工作表")
+        raw = pd.read_excel(xl, sheet_name="Data")
+        settings = {}
+        if "Settings" in xl.sheet_names:
+            st = pd.read_excel(xl, sheet_name="Settings")
+            if {"key", "value"} <= set(st.columns):
+                settings = {str(k).strip(): v for k, v in
+                            zip(st["key"], st["value"]) if pd.notna(k)}
     raw = raw.loc[:, [c for c in raw.columns if not str(c).startswith("Unnamed")]]
     raw.columns = [str(c).strip() for c in raw.columns]
     warns: list[str] = []
@@ -368,13 +373,6 @@ def read_template(path: str | Path,
         raw = raw.loc[raw[probe].notna().any(axis=1)].copy()
     if raw.empty:
         raise ValueError(f"{path.name} 的 Data 表没有数据行")
-
-    settings = {}
-    if "Settings" in xl.sheet_names:
-        st = xl.parse("Settings")
-        if {"key", "value"} <= set(st.columns):
-            settings = {str(k).strip(): v for k, v in
-                        zip(st["key"], st["value"]) if pd.notna(k)}
 
     # Settings 里 solids 区：continuation rows 的 key 形如 "solid:吸附剂"
     solids = {}
