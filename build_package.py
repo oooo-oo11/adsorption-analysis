@@ -7,9 +7,9 @@ output/、_archive/）一律不进包。
     python build_package.py            # 打包
     python build_package.py --no-python  # 不带便携解释器（对方自己装 Python）
 
-便携 Python 的生成方式（一次性，已随包提供）：
+打包前手动准备便携 Python 的方式（本脚本只复制现有 python/）：
     1. 下载 python-3.13.9-embed-amd64.zip 解压到 python/
-    2. python312._pth 改为：
+    2. python313._pth 改为：
            python313.zip
            .
            Lib\\site-packages

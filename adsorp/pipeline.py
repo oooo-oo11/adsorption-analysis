@@ -212,8 +212,12 @@ def run(*, data_dir: str | Path | None = None,
         make_figs: bool = True,
         reuse: bool = False,
         ipd_stages: int = 2,
-        verbose: bool = True) -> dict:
-    """跑完整条流水线，返回各产物路径与关键表。"""
+        verbose: bool = True,
+        data_files: list[str | Path] | None = None) -> dict:
+    """跑完整条流水线，返回各产物路径与关键表。
+
+    ``data_files`` 限定本次读取的工作簿（双击选择后传入），仍自动识别模板/仪器表。
+    """
     def log(msg: str):
         if verbose:
             print(msg, flush=True)
@@ -285,7 +289,10 @@ def run(*, data_dir: str | Path | None = None,
         data = pd.DataFrame()
         # 目录里放什么就读什么，不看文件名：模板（Data+Settings 两张表）
         # 与仪器原始工作簿可以混放，各自走各自的分支。
-        books = list_workbooks(data_dir)
+        books = (list_workbooks(data_dir) if data_files is None
+                 else [Path(p) for p in data_files])
+        if data_files is not None:
+            log(f"      本次选择：{'、'.join(p.name for p in books)}")
         tpls, raws = split_workbooks(books)
         if len(raws) > 1:
             log(f"      发现 {len(raws)} 个工作簿：{'、'.join(p.name for p in raws)}")
@@ -314,7 +321,7 @@ def run(*, data_dir: str | Path | None = None,
         if tpl is not None:
             msg = f"未解析到数据：模板 {tpl} 的 Data 表是空的，或列名不匹配。"
         else:
-            seen = [p.name for p in list_workbooks(Path(data_dir))]
+            seen = [p.name for p in books]
             hint = (f"目录里有 {len(seen)} 个 Excel（{'、'.join(seen[:4])}"
                     + ("…" if len(seen) > 4 else "") + "），但没有一个能识别。\n"
                     if seen else "目录里没有 Excel 文件。\n")

@@ -2,7 +2,7 @@
 rem =====================================================================
 rem  Adsorption analysis - one-click entry (cmd / PowerShell / double-click)
 rem
-rem  Double-click    : find data, run full analysis, open report at the end
+rem  Double-click    : choose data, run full analysis, open report at the end
 rem  adsorp.bat run  : same, but do not open the report
 rem  adsorp.bat template / check / export / matlab : see README
 rem
@@ -33,6 +33,8 @@ if not defined PY_CMD goto :nopython
 %PY_CMD% -m adsorp.cli %*
 set "RC=%ERRORLEVEL%"
 
+rem Selection cancelled: keep the previous report closed and skip failure text.
+if "%RC%"=="130" goto :done
 if not "%RC%"=="0" goto :failed
 
 rem Double-click (no arguments): open the report when the run succeeded.

@@ -18,7 +18,7 @@ import pandas as pd
 
 from .pipeline import (BASE, _merge_template_solids, _unit_hint, load_config,
                        resolve_data_dir, resolve_solid, run)
-from .io import read_all
+from .io import list_workbooks, read_all
 from .template import read_template, write_from_data, write_template
 
 
@@ -35,8 +35,47 @@ def _load_source(a):
 def _cmd_run(a) -> int:
     run(data_dir=a.data_dir, template=a.template, out=a.out, solid=a.solid,
         config=a.config, names_file=a.names, make_figs=not a.no_figs,
-        reuse=a.reuse, ipd_stages=a.ipd_stages)
+        reuse=a.reuse, ipd_stages=a.ipd_stages,
+        data_files=getattr(a, "data_files", None))
     return 0
+
+
+def _select_workbook(a) -> bool:
+    """双击入口选一份工作簿；取消时不创建输出、不启动分析。"""
+    config = Path(a.config)
+    cfg = load_config(config if config.is_absolute() else BASE / config)
+    data_dir = resolve_data_dir(cfg, a.data_dir)
+    books = list_workbooks(data_dir)
+    if not books:
+        return True  # 沿用流水线里的缺数据提示。
+    if len(books) == 1:
+        a.data_files = books
+        print(f"本次数据表：{books[0].name}", flush=True)
+        return True
+
+    print(f"\n发现 {len(books)} 份数据表，请选择本次要分析的文件：")
+    print(f"目录：{data_dir}")
+    for index, path in enumerate(books, 1):
+        print(f"  {index}. {path.name}")
+    print("  0. 取消，不运行分析")
+    while True:
+        try:
+            answer = input(f"请输入编号（1–{len(books)}，0 取消）：").strip()
+        except (EOFError, KeyboardInterrupt):
+            print("\n已取消，本次未运行分析。", flush=True)
+            return False
+        if answer == "0":
+            print("已取消，本次未运行分析。", flush=True)
+            return False
+        try:
+            index = int(answer)
+        except ValueError:
+            index = 0
+        if 1 <= index <= len(books):
+            a.data_files = [books[index - 1]]
+            print(f"本次数据表：{books[index - 1].name}\n", flush=True)
+            return True
+        print(f"编号无效，请输入 1–{len(books)} 之间的整数，或 0 取消。")
 
 
 def _cmd_template(a) -> int:
@@ -220,6 +259,7 @@ def _run_with_log(a) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
+    select_data = not argv
     # 双击 adsorp.bat（无参数），或只给选项（如 --reuse）时，默认跑 run。
     if not argv or argv[0].startswith("-"):
         argv = ["run"] + argv
@@ -271,6 +311,8 @@ def main(argv: list[str] | None = None) -> int:
 
     args = ap.parse_args(argv)
     if args.cmd == "run":
+        if select_data and not _select_workbook(args):
+            return 130
         return _run_with_log(args)
     return args.func(args)
 
